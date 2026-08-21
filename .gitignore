@@ -1,0 +1,51 @@
+# Credentials and local configuration
+inlog gegevens en website.txt
+.env
+.env.*
+!.env.example
+street_furniture_terms.json
+
+# Logs and local input/test data
+*.log
+*.xlsx
+*.xls
+*.csv
+*.geojson
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+tekstfile van de excel gelimiteerde tot 100 LS aansluitingen.txt
+
+# Build products and packaged runtimes
+dist*/
+build*/
+.build*/
+pyinstaller_build/
+pyinstaller_dist/
+cpp/build/
+*.exe
+*.zip
+*.pkg
+*.pyz
+*.toc
+
+# Generated output and temporary test folders
+output*/
+gui_test_output*/
+tmp_test*/
+
+# Python and IDE caches
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.vs/
+.vscode/
+.idea/
+
+# OS metadata
+Thumbs.db
+Desktop.ini
+.DS_Store
