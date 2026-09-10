@@ -15,64 +15,134 @@ if (-not (Test-Path -Path $OutputDirectory)) {
     New-Item -Path $OutputDirectory -ItemType Directory | Out-Null
 }
 
-$portableDirectory = Join-Path -Path $OutputDirectory -ChildPath 'portable'
-if (-not [System.IO.Directory]::Exists($portableDirectory)) {
-    [void][System.IO.Directory]::CreateDirectory($portableDirectory)
-}
-
 $exePath = Join-Path -Path $OutputDirectory -ChildPath 'LovionCoordinateWorkbench.exe'
 if (Test-Path -Path $exePath) {
     Remove-Item -Path $exePath -Force
 }
 
 $scriptPath = Join-Path $scriptRoot 'LovionCoordinateTool.Gui.ps1'
-$appDirectory = Join-Path -Path $OutputDirectory -ChildPath 'app'
-if (-not [System.IO.Directory]::Exists($appDirectory)) {
-    [void][System.IO.Directory]::CreateDirectory($appDirectory)
+$scriptText = Get-Content -Path $scriptPath -Raw -Encoding UTF8
+
+# De standalone EXE voert het ingebedde script uit vanuit een tijdelijke map.
+# Laat configuratie en logs toch naast de EXE terechtkomen in plaats van in %TEMP%.
+$originalDirectoryLine = '$script:ScriptDirectory = if ([string]::IsNullOrWhiteSpace($PSScriptRoot)) { (Get-Location).Path } else { $PSScriptRoot }'
+$embeddedDirectoryLine = '$script:ScriptDirectory = if (-not [string]::IsNullOrWhiteSpace($env:LOVION_APP_BASE_DIRECTORY)) { $env:LOVION_APP_BASE_DIRECTORY } elseif ([string]::IsNullOrWhiteSpace($PSScriptRoot)) { (Get-Location).Path } else { $PSScriptRoot }'
+if (-not $scriptText.Contains($originalDirectoryLine)) {
+    throw 'Kan ScriptDirectory-regel niet vinden in LovionCoordinateTool.Gui.ps1.'
 }
+$scriptText = $scriptText.Replace($originalDirectoryLine, $embeddedDirectoryLine)
+
+# Comprimeer het script voordat het in de launcher wordt ingebed. Dit houdt de C#-bron
+# en de uiteindelijke EXE compact, terwijl er geen los .ps1-bestand hoeft te worden meegeleverd.
+$scriptBytes = [System.Text.Encoding]::UTF8.GetBytes($scriptText)
+$compressedStream = New-Object System.IO.MemoryStream
+$gzipStream = New-Object System.IO.Compression.GZipStream($compressedStream, [System.IO.Compression.CompressionMode]::Compress, $true)
+try {
+    $gzipStream.Write($scriptBytes, 0, $scriptBytes.Length)
+}
+finally {
+    $gzipStream.Dispose()
+}
+$compressedScriptBase64 = [Convert]::ToBase64String($compressedStream.ToArray())
+$compressedStream.Dispose()
 
 $launcherSource = @"
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
+using System.Linq;
+using System.Text;
 using System.Windows.Forms;
 
 internal static class Program
 {
+    private static string Quote(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return "\"\"";
+        }
+
+        if (!value.Any(char.IsWhiteSpace) && !value.Contains("\""))
+        {
+            return value;
+        }
+
+        return "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
+    }
+
+    private static byte[] DecompressScript()
+    {
+        var compressed = Convert.FromBase64String("$compressedScriptBase64");
+        using (var input = new MemoryStream(compressed))
+        using (var gzip = new GZipStream(input, CompressionMode.Decompress))
+        using (var output = new MemoryStream())
+        {
+            gzip.CopyTo(output);
+            return output.ToArray();
+        }
+    }
+
     [STAThread]
-    public static int Main()
+    public static int Main(string[] args)
     {
         var baseDirectory = AppDomain.CurrentDomain.BaseDirectory;
-        var scriptPath = Path.Combine(baseDirectory, "app", "LovionCoordinateTool.Gui.ps1");
-        if (!File.Exists(scriptPath))
+        var tempDirectory = Path.Combine(Path.GetTempPath(), "LovionCoordinateWorkbench");
+        Directory.CreateDirectory(tempDirectory);
+        var tempScriptPath = Path.Combine(tempDirectory, "LovionCoordinateTool.Gui_" + Guid.NewGuid().ToString("N") + ".ps1");
+
+        try
+        {
+            File.WriteAllBytes(tempScriptPath, DecompressScript());
+
+            var powerShellPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), @"WindowsPowerShell\v1.0\powershell.exe");
+            if (!File.Exists(powerShellPath))
+            {
+                powerShellPath = "powershell.exe";
+            }
+
+            var forwardedArguments = args.Length == 0
+                ? string.Empty
+                : " " + string.Join(" ", args.Select(Quote));
+
+            var processStartInfo = new ProcessStartInfo
+            {
+                FileName = powerShellPath,
+                Arguments = "-NoProfile -Sta -WindowStyle Hidden -ExecutionPolicy Bypass -File " + Quote(tempScriptPath) + forwardedArguments,
+                WorkingDirectory = baseDirectory,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            processStartInfo.EnvironmentVariables["LOVION_APP_BASE_DIRECTORY"] = baseDirectory;
+
+            using (var process = Process.Start(processStartInfo))
+            {
+                process.WaitForExit();
+                return process.ExitCode;
+            }
+        }
+        catch (Exception exception)
         {
             MessageBox.Show(
-                "Het applicatiebestand ontbreekt:\n" + scriptPath,
-                "Lovion Coordinate Tool",
+                "Lovion Coordinate Workbench kon niet worden gestart:\n" + exception.Message,
+                "Lovion Coordinate Workbench",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
             return 2;
         }
-
-        var powerShellPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), @"WindowsPowerShell\v1.0\powershell.exe");
-        if (!File.Exists(powerShellPath))
+        finally
         {
-            powerShellPath = "powershell.exe";
-        }
-
-        var processStartInfo = new ProcessStartInfo
-        {
-            FileName = powerShellPath,
-            Arguments = "-NoProfile -Sta -WindowStyle Hidden -ExecutionPolicy Bypass -File \"" + scriptPath + "\"",
-            WorkingDirectory = baseDirectory,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-
-        using (var process = Process.Start(processStartInfo))
-        {
-            process.WaitForExit();
-            return process.ExitCode;
+            try
+            {
+                if (File.Exists(tempScriptPath))
+                {
+                    File.Delete(tempScriptPath);
+                }
+            }
+            catch
+            {
+            }
         }
     }
 }
@@ -81,17 +151,4 @@ internal static class Program
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -TypeDefinition $launcherSource -Language CSharp -ReferencedAssemblies System.Windows.Forms -OutputAssembly $exePath -OutputType WindowsApplication
 
-if (Test-Path -Path (Join-Path $OutputDirectory 'LovionCoordinateTool.Gui.ps1')) {
-    Remove-Item -Path (Join-Path $OutputDirectory 'LovionCoordinateTool.Gui.ps1') -Force
-}
-Copy-Item -Path (Join-Path $scriptRoot 'README.md') -Destination (Join-Path $OutputDirectory 'README.md') -Force
-[System.IO.File]::Copy($scriptPath, (Join-Path $appDirectory 'LovionCoordinateTool.Gui.ps1'), $true)
-[System.IO.File]::Copy($exePath, (Join-Path $portableDirectory 'LovionCoordinateWorkbench.exe'), $true)
-[System.IO.File]::Copy((Join-Path $scriptRoot 'README.md'), (Join-Path $portableDirectory 'README.md'), $true)
-$portableAppDirectory = Join-Path -Path $portableDirectory -ChildPath 'app'
-if (-not [System.IO.Directory]::Exists($portableAppDirectory)) {
-    [void][System.IO.Directory]::CreateDirectory($portableAppDirectory)
-}
-[System.IO.File]::Copy($scriptPath, (Join-Path $portableAppDirectory 'LovionCoordinateTool.Gui.ps1'), $true)
-
-Write-Host "GUI EXE gebouwd: $exePath"
+Write-Host "Standalone GUI EXE gebouwd: $exePath"
