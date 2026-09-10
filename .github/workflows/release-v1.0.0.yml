@@ -18,71 +18,39 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build PowerShell GUI and CLI
+      - name: Build standalone Workbench
         shell: powershell
         run: |
           .\Build-LovionCoordinateToolGuiExe.ps1 -OutputDirectory .\dist
-          .\Build-LovionCoordinateToolExe.ps1 -OutputDirectory .\dist
 
-      - name: Build native C++ CLI
+      - name: Smoke test standalone Workbench
         shell: powershell
         run: |
-          cmake -S .\cpp -B .\cpp\build -A x64
-          cmake --build .\cpp\build --config Release
+          $process = Start-Process `
+            -FilePath ".\dist\LovionCoordinateWorkbench.exe" `
+            -ArgumentList "-SmokeTest" `
+            -PassThru `
+            -Wait
 
-      - name: Package release assets
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $releaseDir = Join-Path $PWD 'release'
-          $packageDir = Join-Path $releaseDir 'Lovion-Aansluiting-Extractor-v1.0.0'
-          New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
-          New-Item -ItemType Directory -Force -Path (Join-Path $packageDir 'app') | Out-Null
-
-          Copy-Item .\dist\LovionCoordinateWorkbench.exe $packageDir -Force
-          Copy-Item .\dist\app\LovionCoordinateTool.Gui.ps1 (Join-Path $packageDir 'app\LovionCoordinateTool.Gui.ps1') -Force
-          Copy-Item .\dist\LovionCoordinateTool.exe $packageDir -Force
-          Copy-Item .\cpp\build\Release\LovionCoordinateToolCpp.exe $packageDir -Force
-          Copy-Item .\README.md $packageDir -Force
-
-          $zipPath = Join-Path $releaseDir 'Lovion-Aansluiting-Extractor-v1.0.0-Windows.zip'
-          Compress-Archive -Path (Join-Path $packageDir '*') -DestinationPath $zipPath -Force
-
-          Copy-Item .\dist\LovionCoordinateTool.exe (Join-Path $releaseDir 'LovionCoordinateTool-v1.0.0.exe') -Force
-          Copy-Item .\cpp\build\Release\LovionCoordinateToolCpp.exe (Join-Path $releaseDir 'LovionCoordinateToolCpp-v1.0.0.exe') -Force
-
-          $assets = @(
-            $zipPath,
-            (Join-Path $releaseDir 'LovionCoordinateTool-v1.0.0.exe'),
-            (Join-Path $releaseDir 'LovionCoordinateToolCpp-v1.0.0.exe')
-          )
-          $sumLines = foreach ($asset in $assets) {
-            $hash = Get-FileHash -Algorithm SHA256 -Path $asset
-            '{0}  {1}' -f $hash.Hash.ToLowerInvariant(), (Split-Path $asset -Leaf)
+          if ($process.ExitCode -ne 0) {
+            throw "LovionCoordinateWorkbench.exe smoke test faalde met exitcode $($process.ExitCode)."
           }
-          Set-Content -Path (Join-Path $releaseDir 'SHA256SUMS.txt') -Value $sumLines -Encoding ASCII
+
+      - name: Prepare release notes
+        shell: powershell
+        run: |
+          $releaseDir = Join-Path $PWD 'release'
+          New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
 
           $notes = @'
           # Lovion Aansluiting Extractor v1.0.0
 
           Eerste officiele release van de Lovion Aansluiting Extractor.
 
-          ## Belangrijkste functies
-          - GUI-workbench voor meerdere TXT-, XLSX- en CSV-bestanden.
-          - Lovion station- en 100-batchautomatisering.
-          - PDOK-geocoding met parallelle adresqueries en fallbacks.
-          - Snappen naar Enexis WFS voor service connections en street furniture.
-          - Export naar CSV, GeoJSON en shapefile.
-          - Herlezen en verwerken van Overdrachtspunt-coordinaten.
-          - Native C++ CLI naast de PowerShell GUI/CLI.
+          ## Download
+          - `LovionCoordinateWorkbench.exe` - standalone Windows GUI-versie.
 
-          ## Downloads
-          - `Lovion-Aansluiting-Extractor-v1.0.0-Windows.zip` - aanbevolen complete Windows-versie met GUI en CLI's.
-          - `LovionCoordinateTool-v1.0.0.exe` - PowerShell CLI launcher.
-          - `LovionCoordinateToolCpp-v1.0.0.exe` - native C++ CLI.
-          - `SHA256SUMS.txt` - SHA-256 checksums van de releasebestanden.
-
-          De GUI in het ZIP-pakket gebruikt het meegeleverde `app/LovionCoordinateTool.Gui.ps1`; houd de mapstructuur daarom intact.
+          De Workbench bevat het benodigde PowerShell-applicatiescript ingebed in de EXE. Er zijn geen losse scripts, CLI-versies of ZIP-bestanden nodig.
           '@
           [System.IO.File]::WriteAllText((Join-Path $releaseDir 'RELEASE_NOTES.md'), $notes, [System.Text.Encoding]::ASCII)
 
@@ -91,10 +59,32 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          $ErrorActionPreference = 'Stop'
+
+          # Houd de v1.0.0-tag gelijk aan de code waarmee de standalone EXE is gebouwd.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f v1.0.0 "$env:GITHUB_SHA"
+          git push origin "refs/tags/v1.0.0" --force
+
           gh release view v1.0.0 --repo "$env:GITHUB_REPOSITORY" *> $null
           $releaseExists = ($LASTEXITCODE -eq 0)
 
           if ($releaseExists) {
+            # Verwijder alle oude release-assets. Alleen de Workbench EXE blijft over.
+            $assetNames = @(gh release view v1.0.0 `
+              --repo "$env:GITHUB_REPOSITORY" `
+              --json assets `
+              --jq '.assets[].name')
+
+            foreach ($assetName in $assetNames) {
+              if (-not [string]::IsNullOrWhiteSpace($assetName)) {
+                gh release delete-asset v1.0.0 "$assetName" `
+                  --repo "$env:GITHUB_REPOSITORY" `
+                  --yes
+              }
+            }
+
             gh release edit v1.0.0 `
               --repo "$env:GITHUB_REPOSITORY" `
               --title "Lovion Aansluiting Extractor v1.0.0" `
@@ -102,11 +92,7 @@ jobs:
 
             gh release upload v1.0.0 `
               --repo "$env:GITHUB_REPOSITORY" `
-              --clobber `
-              ".\release\Lovion-Aansluiting-Extractor-v1.0.0-Windows.zip" `
-              ".\release\LovionCoordinateTool-v1.0.0.exe" `
-              ".\release\LovionCoordinateToolCpp-v1.0.0.exe" `
-              ".\release\SHA256SUMS.txt"
+              ".\dist\LovionCoordinateWorkbench.exe"
           }
           else {
             gh release create v1.0.0 `
@@ -114,8 +100,5 @@ jobs:
               --target "$env:GITHUB_SHA" `
               --title "Lovion Aansluiting Extractor v1.0.0" `
               --notes-file ".\release\RELEASE_NOTES.md" `
-              ".\release\Lovion-Aansluiting-Extractor-v1.0.0-Windows.zip" `
-              ".\release\LovionCoordinateTool-v1.0.0.exe" `
-              ".\release\LovionCoordinateToolCpp-v1.0.0.exe" `
-              ".\release\SHA256SUMS.txt"
+              ".\dist\LovionCoordinateWorkbench.exe"
           }
