@@ -65,7 +65,7 @@ jobs:
           $notes = @'
           # Lovion Aansluiting Extractor v1.0.0
 
-          Eerste officiële release van de Lovion Aansluiting Extractor.
+          Eerste officiele release van de Lovion Aansluiting Extractor.
 
           ## Belangrijkste functies
           - GUI-workbench voor meerdere TXT-, XLSX- en CSV-bestanden.
@@ -73,19 +73,18 @@ jobs:
           - PDOK-geocoding met parallelle adresqueries en fallbacks.
           - Snappen naar Enexis WFS voor service connections en street furniture.
           - Export naar CSV, GeoJSON en shapefile.
-          - Herlezen en verwerken van Overdrachtspunt-coördinaten.
+          - Herlezen en verwerken van Overdrachtspunt-coordinaten.
           - Native C++ CLI naast de PowerShell GUI/CLI.
 
           ## Downloads
-          - `Lovion-Aansluiting-Extractor-v1.0.0-Windows.zip` — aanbevolen complete Windows-versie met GUI en CLI's.
-          - `LovionCoordinateTool-v1.0.0.exe` — PowerShell CLI launcher.
-          - `LovionCoordinateToolCpp-v1.0.0.exe` — native C++ CLI.
-          - `SHA256SUMS.txt` — SHA-256 checksums van de releasebestanden.
+          - `Lovion-Aansluiting-Extractor-v1.0.0-Windows.zip` - aanbevolen complete Windows-versie met GUI en CLI's.
+          - `LovionCoordinateTool-v1.0.0.exe` - PowerShell CLI launcher.
+          - `LovionCoordinateToolCpp-v1.0.0.exe` - native C++ CLI.
+          - `SHA256SUMS.txt` - SHA-256 checksums van de releasebestanden.
 
           De GUI in het ZIP-pakket gebruikt het meegeleverde `app/LovionCoordinateTool.Gui.ps1`; houd de mapstructuur daarom intact.
           '@
-          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-          [System.IO.File]::WriteAllText((Join-Path $releaseDir 'RELEASE_NOTES.md'), $notes, $utf8NoBom)
+          [System.IO.File]::WriteAllText((Join-Path $releaseDir 'RELEASE_NOTES.md'), $notes, [System.Text.Encoding]::ASCII)
 
       - name: Publish GitHub release
         shell: powershell
