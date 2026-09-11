@@ -6113,11 +6113,12 @@ function Open-LovionConnectionsForStation {
     param(
         [string]$StationNumber,
         [int]$StationIndex,
-        [int]$StationCount
+        [int]$StationCount,
+        [int]$TransformerIndex = 0
     )
 
-    Set-LovionBatchStatus ("Station {0}/{1}: {2} zoeken" -f $StationIndex, $StationCount, $StationNumber)
-    Write-LovionBatchLog ("Stationsimport: station {0}/{1} openen: {2}" -f $StationIndex, $StationCount, $StationNumber)
+    Set-LovionBatchStatus ("Station {0}/{1}: trafo {2} zoeken ({3})" -f $StationIndex, $StationCount, ($TransformerIndex + 1), $StationNumber)
+    Write-LovionBatchLog ("Stationsimport: station {0}/{1}, trafo {2} openen: {3}" -f $StationIndex, $StationCount, ($TransformerIndex + 1), $StationNumber)
 
     if ($null -eq (Wait-LovionScreenPattern -Pattern 'LS\s+Stroomtransformatorgroep' -TimeoutSeconds 25 -Description 'de startlijst LS Stroomtransformatorgroep')) {
         throw 'De startlijst LS Stroomtransformatorgroep is niet zichtbaar. Open deze lijst in Lovion voordat je de stationsimport start.'
@@ -6153,15 +6154,21 @@ function Open-LovionConnectionsForStation {
         $initialResultCount = [Math]::Max($initialResultCount, [int]$initialQueryCounters.filtered)
     }
     Write-LovionBatchLog ("Eerste zoekresultaten station {0}: geladen={1}, gefilterd={2}." -f $StationNumber, $initialQueryCounters.loaded, $initialQueryCounters.filtered)
-    if ($initialResultCount -gt 1) {
-        Write-LovionBatchLog ("Station {0} overgeslagen: eerste zoekopdracht leverde {1} resultaten op; verwacht precies één resultaat." -f $StationNumber, $initialResultCount)
-        return [pscustomobject]@{
-            Selected = $false
-            ManualRequired = $false
-            Skipped = $true
-            SkipReason = 'Meerdere resultaten in de eerste zoekopdracht'
-            InitialResultCount = $initialResultCount
-        }
+    if ($TransformerIndex -lt 0 -or $TransformerIndex -ge $initialResultCount) {
+        throw ("Station {0} heeft {1} eerste zoekresultaten, maar trafo-index {2} werd gevraagd." -f $StationNumber, $initialResultCount, $TransformerIndex)
+    }
+    if ($TransformerIndex -gt 13) {
+        throw ("Station {0} heeft meer dan 14 eerste zoekresultaten; trafo {1} kan niet betrouwbaar in beeld worden geselecteerd." -f $StationNumber, ($TransformerIndex + 1))
+    }
+
+    # A station can contain more than one transformer. Select exactly one
+    # result before Open so each transformer gets its own network trace.
+    if (-not (Invoke-LovionClickRow -VisibleRowIndex $TransformerIndex)) {
+        throw ("Trafo {0} van station {1} kon niet in de eerste resultatenlijst worden geselecteerd." -f ($TransformerIndex + 1), $StationNumber)
+    }
+    $selectedTransformerCount = Wait-LovionSelectedCount -TargetCount 1 -TimeoutSeconds 20
+    if ($selectedTransformerCount -ne 1) {
+        throw ("Trafo {0} van station {1} werd niet als één geselecteerde rij herkend; teller={2}." -f ($TransformerIndex + 1), $StationNumber, $selectedTransformerCount)
     }
 
     Invoke-LovionStationOcrClick -TargetText 'Open' -Description 'de tab Open' -TimeoutSeconds 30 -MinXRatio 0.00 -MaxXRatio 0.18 -MinYRatio 0.00 -MaxYRatio 0.10 -AfterClickMilliseconds 500
@@ -6190,7 +6197,14 @@ function Open-LovionConnectionsForStation {
     if ($null -eq $connections) {
         throw ("De LS-aansluitingenlijst voor station {0} werd niet herkend. Controleer of Lovion volledig op het linker scherm staat en de lijst LS stroomtransformatorgroep bij de start open was." -f $StationNumber)
     }
-    Write-LovionBatchLog ("Stationsimport: aansluitingenlijst {0} gereed; geladen={1}, gefilterd={2}." -f $StationNumber, $connections.loaded, $connections.filtered)
+    Write-LovionBatchLog ("Stationsimport: aansluitingenlijst station {0}, trafo {1}/{2} gereed; geladen={3}, gefilterd={4}." -f $StationNumber, ($TransformerIndex + 1), $initialResultCount, $connections.loaded, $connections.filtered)
+    return [pscustomobject]@{
+        Selected = $true
+        ManualRequired = $false
+        Skipped = $false
+        InitialResultCount = $initialResultCount
+        TransformerIndex = $TransformerIndex
+    }
 }
 
 function Close-LovionStationResultTabs {
@@ -6198,19 +6212,6 @@ function Close-LovionStationResultTabs {
     Invoke-LovionStationClick -X 499 -Y 21 -WaitMilliseconds 1800 -Description 'de stationweergavetab'
     if ($null -eq (Wait-LovionScreenPattern -Pattern 'LS\s+Stroomtransformatorgroep' -TimeoutSeconds 12 -Description 'de terugkeer naar de stationslijst')) {
         throw 'Na het sluiten van de resultaat-tabs werd de lijst LS Stroomtransformatorgroep niet teruggevonden.'
-    }
-}
-
-function Close-LovionStationQueryTabs {
-    # A station skipped before Open has no LS Schema result tab yet. Close the
-    # active EXPLORE query tab first and only close the View tab if needed.
-    Invoke-LovionStationClick -X 735 -Y 14 -WaitMilliseconds 650 -Description 'de querytab met meerdere stationresultaten'
-    if ($null -ne (Wait-LovionScreenPattern -Pattern 'LS\s+Stroomtransformatorgroep' -TimeoutSeconds 5 -Description 'de terugkeer naar de stationslijst na overslaan')) {
-        return
-    }
-    Invoke-LovionStationClick -X 499 -Y 21 -WaitMilliseconds 1200 -Description 'de overgebleven stationweergavetab na overslaan'
-    if ($null -eq (Wait-LovionScreenPattern -Pattern 'LS\s+Stroomtransformatorgroep' -TimeoutSeconds 20 -Description 'de stationslijst na overslaan')) {
-        throw 'Na het overslaan van een station met meerdere zoekresultaten kon de stationslijst niet worden teruggevonden.'
     }
 }
 
@@ -6234,48 +6235,60 @@ function Invoke-LovionStationsImportCore {
 
     $summaries = New-Object System.Collections.Generic.List[string]
     $manualStations = New-Object System.Collections.Generic.List[string]
-    $skippedStations = New-Object System.Collections.Generic.List[string]
     $totalImported = 0
     $stationCount = Get-CollectionCount $StationNumbers
     for ($index = 0; $index -lt $stationCount; $index += 1) {
         $station = ([string]$StationNumbers[$index]).Trim()
         try {
-            $stationOpenResult = Open-LovionConnectionsForStation -StationNumber $station -StationIndex ($index + 1) -StationCount $stationCount
-            if ($null -ne $stationOpenResult -and $stationOpenResult.ManualRequired) {
-                $manualStations.Add($station)
-                $summaries.Add(("{0}: handmatig toevoegen aan de Workbench-lijst" -f $station))
-                Set-LovionBatchStatus ("Station {0}/{1}: handmatige controle nodig" -f ($index + 1), $stationCount)
-                Write-LovionBatchLog ("Stationsimport: {0} overgeslagen; handmatige toevoeging aan de Workbench-lijst vereist." -f $station)
-
-                # There is no result tab when the map has two ambiguous markers.
-                # Close only the station-view tab and verify that the start list is
-                # back before continuing with the next station.
-                Invoke-LovionStationClick -X 499 -Y 21 -WaitMilliseconds 1200 -Description 'de stationweergavetab na handmatige kaartcontrole'
-                if ($null -eq (Wait-LovionScreenPattern -Pattern 'LS\s+Stroomtransformatorgroep' -TimeoutSeconds 20 -Description 'de stationslijst na handmatige kaartcontrole')) {
-                    throw 'Na de handmatige kaartcontrole kon de stationslijst niet opnieuw worden geactiveerd.'
-                }
-                continue
-            }
-
-            if ($null -ne $stationOpenResult -and $stationOpenResult.Skipped) {
-                $skippedStations.Add($station)
-                $summaries.Add(("{0}: overgeslagen ({1}; {2} resultaten)" -f $station, $stationOpenResult.SkipReason, $stationOpenResult.InitialResultCount))
-                Set-LovionBatchStatus ("Station {0}/{1}: overgeslagen" -f ($index + 1), $stationCount)
-                Write-LovionBatchLog ("Stationsimport: {0} overgeslagen; {1}." -f $station, $stationOpenResult.SkipReason)
-                Close-LovionStationQueryTabs
-                continue
-            }
-
-            Set-LovionBatchStatus ("Station {0}/{1}: aansluitingen importeren" -f ($index + 1), $stationCount)
             $sourcePrefix = ($station -replace '[\\/:*?"<>|]', '_').Trim()
             if ([string]::IsNullOrWhiteSpace($sourcePrefix)) {
                 $sourcePrefix = 'Station_{0:000}' -f ($index + 1)
             }
-            $result = Invoke-LovionBatchImport -SourcePrefix $sourcePrefix -SkipCountdown -UseExactSourceName -SourceType 'LovionStationBatch'
-            $totalImported += $result.ImportedCount
-            $summaries.Add(("{0}: {1} aansluitingen" -f $station, $result.ImportedCount))
-            Write-LovionBatchLog ("Stationsimport: {0} afgerond met {1} aansluitingen." -f $station, $result.ImportedCount)
-            Close-LovionStationResultTabs
+
+            # The first query tells us how many transformers belong to this
+            # station. Open and import every result separately, but reuse the
+            # exact same SourceFile/station number for all resulting rows.
+            $transformerIndex = 0
+            $transformerCount = 1
+            do {
+                $stationOpenResult = Open-LovionConnectionsForStation -StationNumber $station -StationIndex ($index + 1) -StationCount $stationCount -TransformerIndex $transformerIndex
+                if ($null -ne $stationOpenResult -and $stationOpenResult.InitialResultCount -gt 0) {
+                    $transformerCount = [Math]::Max(1, [int]$stationOpenResult.InitialResultCount)
+                }
+
+                if ($null -ne $stationOpenResult -and $stationOpenResult.ManualRequired) {
+                    if (-not $manualStations.Contains($station)) {
+                        $manualStations.Add($station)
+                    }
+                    $summaries.Add(("{0} trafo {1}/{2}: handmatig toevoegen aan de Workbench-lijst" -f $station, ($transformerIndex + 1), $transformerCount))
+                    Set-LovionBatchStatus ("Station {0}/{1}, trafo {2}/{3}: handmatige controle nodig" -f ($index + 1), $stationCount, ($transformerIndex + 1), $transformerCount)
+                    Write-LovionBatchLog ("Stationsimport: {0} trafo {1}/{2} overgeslagen; handmatige toevoeging aan de Workbench-lijst vereist." -f $station, ($transformerIndex + 1), $transformerCount)
+
+                    # There is no result tab when the map has two ambiguous markers.
+                    # Close only the station-view tab and verify that the start list is
+                    # back before querying the next transformer.
+                    Invoke-LovionStationClick -X 499 -Y 21 -WaitMilliseconds 1200 -Description 'de stationweergavetab na handmatige kaartcontrole'
+                    if ($null -eq (Wait-LovionScreenPattern -Pattern 'LS\s+Stroomtransformatorgroep' -TimeoutSeconds 20 -Description 'de stationslijst na handmatige kaartcontrole')) {
+                        throw 'Na de handmatige kaartcontrole kon de stationslijst niet opnieuw worden geactiveerd.'
+                    }
+                    $transformerIndex += 1
+                    continue
+                }
+
+                Set-LovionBatchStatus ("Station {0}/{1}, trafo {2}/{3}: aansluitingen importeren" -f ($index + 1), $stationCount, ($transformerIndex + 1), $transformerCount)
+                $result = Invoke-LovionBatchImport -SourcePrefix $sourcePrefix -SkipCountdown -UseExactSourceName -SourceType 'LovionStationBatch'
+                $totalImported += $result.ImportedCount
+                if ($transformerCount -gt 1) {
+                    $summaries.Add(("{0} trafo {1}/{2}: {3} aansluitingen" -f $station, ($transformerIndex + 1), $transformerCount, $result.ImportedCount))
+                    Write-LovionBatchLog ("Stationsimport: {0} trafo {1}/{2} afgerond met {3} aansluitingen." -f $station, ($transformerIndex + 1), $transformerCount, $result.ImportedCount)
+                }
+                else {
+                    $summaries.Add(("{0}: {1} aansluitingen" -f $station, $result.ImportedCount))
+                    Write-LovionBatchLog ("Stationsimport: {0} afgerond met {1} aansluitingen." -f $station, $result.ImportedCount)
+                }
+                Close-LovionStationResultTabs
+                $transformerIndex += 1
+            } while ($transformerIndex -lt $transformerCount)
         }
         catch {
             throw ("Station {0}: {1}" -f $station, $_.Exception.Message)
@@ -6287,7 +6300,6 @@ function Invoke-LovionStationsImportCore {
         StationCount = $stationCount
         Summaries = $summaries.ToArray()
         ManualStations = $manualStations.ToArray()
-        SkippedStations = $skippedStations.ToArray()
     }
 }
 
@@ -6297,7 +6309,7 @@ function Start-LovionStationsImport {
         return
     }
 
-    $question = "Open in Lovion eerst de lijst LS stroomtransformatorgroep en selecteer alleen de eerste rij.`n`nDe Workbench verwerkt daarna {0} station(s), opent per station de LS-aansluitingenlijst en importeert alles via de bestaande Lovion 100-methode. SourceFile is exact het stationnummer.`n`nLovion moet volledig zichtbaar op het linker scherm staan. De cursor blijft op de laatst gebruikte positie staan; zodra je de muis zelf beweegt, stopt de automatisering. Typ tijdens de verwerking ook niet.`n`nStarten?" -f $stationNumbers.Count
+    $question = "Open in Lovion eerst de lijst LS stroomtransformatorgroep en selecteer alleen de eerste rij.`n`nDe Workbench verwerkt daarna {0} station(s). Bij meerdere trafo-resultaten op één station wordt iedere trafo apart geopend en geïmporteerd, maar blijft SourceFile exact hetzelfde stationnummer.`n`nLovion moet volledig zichtbaar op het linker scherm staan. De cursor blijft op de laatst gebruikte positie staan; zodra je de muis zelf beweegt, stopt de automatisering. Typ tijdens de verwerking ook niet.`n`nStarten?" -f $stationNumbers.Count
     $answer = [System.Windows.Forms.MessageBox]::Show($script:MainForm, $question, 'Stations importeren', [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
     if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) {
         return
@@ -6330,17 +6342,8 @@ function Start-LovionStationsImport {
     if ((Get-CollectionCount $result.ManualStations) -gt 0) {
         $manualText = "`n`nLet op: de volgende stations hadden twee gele kaartresultaten zonder centrale marker. Voeg deze handmatig toe aan de Lovion Coordinate Workbench-lijst:`n{0}" -f ($result.ManualStations -join ', ')
     }
-    $skippedText = ''
-    if ((Get-CollectionCount $result.SkippedStations) -gt 0) {
-        $skippedText = "`n`nFOUT / OVERGESLAGEN: de volgende stations hadden meerdere resultaten in de eerste zoekopdracht en zijn daarom niet geopend of geïmporteerd:`n{0}" -f ($result.SkippedStations -join ', ')
-    }
-    $completionMessage = "Stationsimport klaar.`n`nStations: {0}`nAansluitingen: {1}`n`n{2}{3}{4}" -f $result.StationCount, $result.ImportedCount, $details, $manualText, $skippedText
-    if ((Get-CollectionCount $result.SkippedStations) -gt 0) {
-        Show-ErrorMessage $completionMessage
-    }
-    else {
-        Show-InfoMessage $completionMessage
-    }
+    $completionMessage = "Stationsimport klaar.`n`nStations: {0}`nAansluitingen: {1}`n`n{2}{3}" -f $result.StationCount, $result.ImportedCount, $details, $manualText
+    Show-InfoMessage $completionMessage
 }
 
 function Build-MainForm {

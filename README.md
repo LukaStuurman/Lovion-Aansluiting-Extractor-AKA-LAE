@@ -148,7 +148,7 @@ De knop `Lovion 100-batches` in de PowerShell-GUI automatiseert tabelkopieen uit
 * kan optioneel stoppen op een handmatig ingevuld totaal, of automatisch op het uit Lovion gelezen totaal
 * laat de cursor op de laatst gebruikte Lovion-positie staan en stopt de automatisering zodra de gebruiker de muis zelf beweegt
 
-De knop `Stations` gebruikt voor de navigatie nu OCR op het actuele Lovion-venster. De tabs, `Start query`, `VIEW`, `Schakelaar`, `Aansluitingen` en de bijbehorende `Netwerk`-opties worden pas aangeklikt nadat het zichtbare label in de juiste schermregio is gevonden. Hierdoor wordt een verschoven of nog niet volledig geladen menu niet meer blind op een vaste positie aangeklikt. De workflow wacht langer op trage Lovion-schermen en stopt met een duidelijke foutmelding als een vereist label niet verschijnt. Als de eerste stationquery meer dan één resultaat oplevert, wordt het station vóór `Open` overgeslagen en aan het einde in een foutmelding genoemd. Als de kaart geen centrale marker heeft maar wel twee gele resultaten toont, wordt het station ook bewust overgeslagen en aan het eind gemeld voor handmatige toevoeging aan de Lovion Coordinate Workbench-lijst.
+De knop `Stations` gebruikt voor de navigatie nu OCR op het actuele Lovion-venster. De tabs, `Start query`, `VIEW`, `Schakelaar`, `Aansluitingen` en de bijbehorende `Netwerk`-opties worden pas aangeklikt nadat het zichtbare label in de juiste schermregio is gevonden. Hierdoor wordt een verschoven of nog niet volledig geladen menu niet meer blind op een vaste positie aangeklikt. De workflow wacht langer op trage Lovion-schermen en stopt met een duidelijke foutmelding als een vereist label niet verschijnt. Als de eerste stationquery meer dan één resultaat oplevert, worden de resultaten één voor één verwerkt: iedere trafo krijgt een eigen selectie-, `Open`-, netwerk- en exportcyclus, terwijl alle geëxporteerde rijen dezelfde stationcode als `SourceFile` houden. Als de kaart geen centrale marker heeft maar wel twee gele resultaten toont, wordt het station ook bewust overgeslagen en aan het eind gemeld voor handmatige toevoeging aan de Lovion Coordinate Workbench-lijst.
 
 Voor grote aansluitingenlijsten zet de batch de grid eerst met `Ctrl+Home` op de eerste rij, houdt één fysieke `Shift` continu vast tijdens de reeks `↓`-toetsen en controleert zowel de teller als de klembordexport. Na een batch wordt `Shift` losgelaten en volgt precies één gewone `↓` voor de volgende startregel.
 
@@ -173,11 +173,11 @@ Per station werkt de workflow als volgt:
 2. Klikt alleen op gevonden OCR-labels in de actuele schermregio. De workflow gebruikt dus niet blind één vaste knoppositie.
 3. Klikt achtereenvolgens op `EXPLORE`, `Start query`, `Open` en `VIEW`. `Start query` wordt maximaal 45 seconden gezocht; als Citrix traag is, wordt gewacht totdat het zichtbare label en de verwachte volgende schermtoestand aanwezig zijn.
 4. Na `Start query` leest de workflow `Aantal geladen` en `Gefilterd`. De OCR moet eerst van het vorige scherm veranderen en daarna stabiel zijn.
-5. Als de eerste stationquery meer dan één resultaat geeft, wordt het station vóór `Open` overgeslagen. Het station wordt niet verder geanalyseerd en niet geïmporteerd. De querytab wordt gesloten, waarna de stationslijst wordt hersteld en de volgende invoer doorgaat.
-6. Bij maximaal één eerste zoekresultaat wordt `VIEW` geopend. Daarna worden in de netwerkweergave de gevonden labels gebruikt voor `Netwerk`, `Schakelaars`, `Rekening houden met standen van schakelaars`, `Geen objecten` en `Aansluitingen`.
+5. De teller van de eerste stationquery bepaalt hoeveel trafos bij het station horen. Bij één resultaat wordt rij 1 verwerkt. Bij meerdere resultaten wordt per cyclus precies één rij geselecteerd, geopend en via `Netwerk` geanalyseerd. Daarna worden de resultaat-tabs gesloten, wordt dezelfde stationslijst opnieuw geladen en wordt de volgende trafo geselecteerd. Zo blijven meerdere trafos aan hetzelfde station gekoppeld zonder dat selecties of netwerkresultaten door elkaar lopen.
+6. Voor de geselecteerde trafo wordt `VIEW` geopend. Daarna worden in de netwerkweergave de gevonden labels gebruikt voor `Netwerk`, `Schakelaars`, `Rekening houden met standen van schakelaars`, `Geen objecten` en `Aansluitingen`.
 7. Na de kaart-/netwerkselectie wordt `Exporteren` via OCR gevonden en wordt gewacht op de LS-aansluitingenlijst. De tabelteller wordt pas geaccepteerd als de kolomkoppen en de aantallen betrouwbaar zichtbaar zijn.
 
-De dubbele eerste zoekresultaten zijn een harde oversla-conditie. Tijdens het testen was dat het geval voor `017.545`: Lovion gaf `geladen=2` en `gefilterd=2`. De workflow klikte daarna niet op `Open`, voerde geen kaartanalyse uit en exporteerde geen aansluitingen voor dit station. Aan het einde gebruikt de GUI een foutmelding met de tekst `FOUT / OVERGESLAGEN` en noemt hij alle stations die op deze manier zijn overgeslagen.
+Meerdere eerste zoekresultaten zijn geen oversla-conditie meer. Tijdens het testen was dat het geval voor `017.545`: Lovion gaf `geladen=2` en `gefilterd=2`. De workflow gebruikt dit aantal nu om trafo 1 en trafo 2 afzonderlijk te verwerken. Beide importbatches gebruiken exact `017.545` als `SourceFile`; in de samenvatting worden ze herkenbaar weergegeven als `017.545 trafo 1/2` en `017.545 trafo 2/2`.
 
 ### Selecteren en kopiëren van aansluitingen
 
@@ -194,13 +194,13 @@ Shift mag niet tijdens het muiswiel-scrollen worden vastgehouden: in Lovion vero
 
 ### Foutafhandeling en logging
 
-Alle belangrijke stappen worden naar `LovionBatch.log` geschreven, waaronder OCR-klikken, wachttijden, eerste zoekresultaten, batchaantallen, klembordcontroles en overgeslagen stations. Als een vereist label niet binnen de timeout verschijnt, wordt de workflow gestopt met een foutmelding in plaats van op een vermoedelijke positie door te klikken.
+Alle belangrijke stappen worden naar `LovionBatch.log` geschreven, waaronder OCR-klikken, wachttijden, eerste zoekresultaten, trafo-indexen, batchaantallen, klembordcontroles en handmatige kaartgevallen. Als een vereist label niet binnen de timeout verschijnt, wordt de workflow gestopt met een foutmelding in plaats van op een vermoedelijke positie door te klikken.
 
-De bestaande kaartmarkerfallback kan na een mislukte centrale kaartklik nog gele markers proberen en heeft een aparte handmatige-melding voor ambigue kaartresultaten. Die situatie is in de laatste test niet opnieuw onderzocht; de nieuwe harde skipregel voor meerdere resultaten in de eerste stationquery staat daar los van.
+De bestaande kaartmarkerfallback kan na een mislukte centrale kaartklik nog gele markers proberen en heeft een aparte handmatige-melding voor ambigue kaartresultaten. Die situatie staat los van de trafo-verwerking: meerdere resultaten in de eerste stationquery worden nu wel afzonderlijk geopend, terwijl ambigue kaartmarkers nog handmatige toevoeging aan de Workbench kunnen vereisen.
 
 ### Getest gedrag
 
-De wijzigingen zijn live op de Citrix-Lovion-app getest met de opgegeven stations. In de brede test werden 1.735 aansluitingen verwerkt; onder andere `017.525` als `100 + 21`, `017.519` als `100 + 100 + 22` en `017.577` als `100 + 100 + 75`. Daarna is de nieuwe skipregel afzonderlijk getest met `017.545` gevolgd door `017.584`: resultaat `017.545` overgeslagen, `017.584` vervolgd en 80 aansluitingen geïmporteerd.
+De basisroute is live op de Citrix-Lovion-app getest met de opgegeven stations. In de brede test werden 1.735 aansluitingen verwerkt; onder andere `017.525` als `100 + 21`, `017.519` als `100 + 100 + 22` en `017.577` als `100 + 100 + 75`. Daarbij leverde `017.545` twee eerste zoekresultaten op (`geladen=2`, `gefilterd=2`); de oude skipcontrole is met deze wijziging vervangen door twee afzonderlijke trafo-cycli. De nieuwe multi-trafo-lus is met een gecontroleerde PowerShell-mocktest gevalideerd: twee `Open`-cycli, twee imports met dezelfde `SourceFile` `017.545`, 84 mock-aansluitingen totaal en twee sluitcycli.
 
 Daarnaast zijn de PowerShell-smoketest, `git diff --check`, de standalone GUI-EXE-build en een EXE-smoketest uitgevoerd. De EXE-build eindigde met exitcode 0.
 
@@ -228,7 +228,7 @@ Wat de GUI kan:
 * eerste kolom is altijd `SourceFile`
 * `Klembord Import` om de huidige clipboardtekst direct toe te voegen, met een eigen `SourceFile`-naam
 * `Plakvenster` voor grote Lovion-tekstexports die je eerst wilt bekijken of handmatig wilt aanpassen, ook met een eigen `SourceFile`-naam
-* `Stations` vraagt een lijst stationnummers, start vanuit de Lovion-lijst `LS stroomtransformatorgroep`, opent voor iedere query eerst de bovenste tab `EXPLORE`, klikt daarna op `Start query`, controleert het aantal eerste resultaten, opent een uniek resultaat via `Open > VIEW` en importeert alle aansluitingen met de bestaande 100-regelmethode; meerdere eerste resultaten worden vóór `Open` overgeslagen en gemeld; `SourceFile` is exact het stationnummer, zonder batchnummer erachter
+* `Stations` vraagt een lijst stationnummers, start vanuit de Lovion-lijst `LS stroomtransformatorgroep`, opent voor iedere query eerst de bovenste tab `EXPLORE`, klikt daarna op `Start query`, controleert het aantal eerste resultaten, opent ieder resultaat afzonderlijk via `Open > VIEW` en importeert alle aansluitingen met de bestaande 100-regelmethode; meerdere trafos blijven gekoppeld aan hetzelfde station doordat `SourceFile` exact het stationnummer blijft, zonder batchnummer erachter
 * `Geocodeer PDOK` om rijen zonder coordinaten op adres te verrijken
 * `Geocodeer PDOK` gebruikt nu standaard parallelle requests voor unieke adresqueries, waardoor grote lijsten merkbaar sneller lopen
 * `Geocodeer PDOK` gebruikt nu een veldgerichte query op `straatnaam`, `huisnummer`, `postcode` en `woonplaatsnaam`, gefilterd op `type:adres` en `bron:BAG`
