@@ -1,9 +1,9 @@
-name: Release v1.1.0
+name: Release v1.2.0
 
 on:
   push:
     tags:
-      - v1.1.0
+      - v1.2.0
 
 permissions:
   contents: write
@@ -41,9 +41,18 @@ jobs:
           New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
 
           $notes = @'
-          # Lovion Aansluiting Extractor v1.1.0
+          # Lovion Aansluiting Extractor v1.2.0
 
-          Eerste officiele release van de Lovion Aansluiting Extractor.
+          Deze release bevat de robuuste Lovion/Citrix-stationsworkflow.
+
+          ## Stationsworkflow
+          - `Aantal geladen` bepaalt hoeveel trafo's bij een station horen.
+          - Bij één resultaat wordt de enige rij niet aangeklikt; de workflow gaat direct naar `Open` en `VIEW`.
+          - Bij meerdere resultaten wordt de juiste rij via OCR aan `Master Asset ID` in de rechterresultaatlijst gekoppeld.
+          - Na trafo 1 keert Lovion terug naar de al geladen eerste resultatenlijst; trafo 2 en volgende worden daar direct geselecteerd zonder opnieuw zoeken of `Start query`.
+          - Alle trafo's van één station behouden hetzelfde stationnummer als `SourceFile`.
+
+          De volledige werkwijze en onderhoudsinstructies staan in `README.md`.
 
           ## Download
           - `LovionCoordinateWorkbench.exe` - standalone Windows GUI-versie.
@@ -59,49 +68,49 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
-          # Houd de v1.1.0-tag gelijk aan de code waarmee de standalone EXE is gebouwd.
+          # Houd de v1.2.0-tag gelijk aan de code waarmee de standalone EXE is gebouwd.
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -f v1.1.0 "$env:GITHUB_SHA"
-          git push origin "refs/tags/v1.1.0" --force
+          git tag -f v1.2.0 "$env:GITHUB_SHA"
+          git push origin "refs/tags/v1.2.0" --force
 
           # Een ontbrekende release is normaal bij de eerste publicatie.
           # Laat gh's exitcode wel uitlezen zonder dat PowerShell de stderr als exception behandelt.
           $savedErrorActionPreference = $ErrorActionPreference
           $ErrorActionPreference = 'Continue'
-          gh release view v1.1.0 --repo "$env:GITHUB_REPOSITORY" *> $null
+          gh release view v1.2.0 --repo "$env:GITHUB_REPOSITORY" *> $null
           $releaseExists = ($LASTEXITCODE -eq 0)
           $ErrorActionPreference = $savedErrorActionPreference
 
           if ($releaseExists) {
             # Verwijder alle oude release-assets. Alleen de Workbench EXE blijft over.
-            $assetNames = @(gh release view v1.1.0 `
+            $assetNames = @(gh release view v1.2.0 `
               --repo "$env:GITHUB_REPOSITORY" `
               --json assets `
               --jq '.assets[].name')
 
             foreach ($assetName in $assetNames) {
               if (-not [string]::IsNullOrWhiteSpace($assetName)) {
-                gh release delete-asset v1.1.0 "$assetName" `
+                gh release delete-asset v1.2.0 "$assetName" `
                   --repo "$env:GITHUB_REPOSITORY" `
                   --yes
               }
             }
 
-            gh release edit v1.1.0 `
+            gh release edit v1.2.0 `
               --repo "$env:GITHUB_REPOSITORY" `
-              --title "Lovion Aansluiting Extractor v1.1.0" `
+              --title "Lovion Aansluiting Extractor v1.2.0" `
               --notes-file ".\release\RELEASE_NOTES.md"
 
-            gh release upload v1.1.0 `
+            gh release upload v1.2.0 `
               --repo "$env:GITHUB_REPOSITORY" `
               ".\dist\LovionCoordinateWorkbench.exe"
           }
           else {
-            gh release create v1.1.0 `
+            gh release create v1.2.0 `
               --repo "$env:GITHUB_REPOSITORY" `
               --target "$env:GITHUB_SHA" `
-              --title "Lovion Aansluiting Extractor v1.1.0" `
+              --title "Lovion Aansluiting Extractor v1.2.0" `
               --notes-file ".\release\RELEASE_NOTES.md" `
               ".\dist\LovionCoordinateWorkbench.exe"
           }

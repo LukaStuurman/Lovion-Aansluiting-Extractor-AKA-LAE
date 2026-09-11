@@ -5298,11 +5298,79 @@ function Invoke-LovionClipboardExportMenu {
     return $result
 }
 
+function Wait-LovionTransformerResultRowPoint {
+    param(
+        [int]$VisibleRowIndex,
+        [int]$TimeoutSeconds = 35,
+        [int]$PollMilliseconds = 550
+    )
+
+    $boundedRowIndex = [Math]::Max(0, [Math]::Min(13, $VisibleRowIndex))
+    $deadline = (Get-Date).AddSeconds([Math]::Max(1, $TimeoutSeconds))
+
+    do {
+        Assert-LovionAutomationNotCancelled
+        if (-not (Set-LovionWindowActive)) {
+            Start-Sleep -Milliseconds $PollMilliseconds
+            continue
+        }
+
+        # The generic connection-grid coordinates are deliberately not used here.
+        # The transformer results are in Lovion's lower-right table, and its
+        # position can move when Citrix/Lovion renders slowly or is resized.
+        $snapshot = Get-LovionOcrSnapshot -UseLovionWindow -FullWindow
+        if ($null -ne $snapshot) {
+            $header = $null
+            foreach ($headerText in @('Master Asset ID', 'Master Asset', 'Asset ID')) {
+                $candidate = Find-LovionOcrTarget -Snapshot $snapshot -TargetText $headerText
+                if ($null -eq $candidate) {
+                    continue
+                }
+
+                # Require the result-table header to be in the lower-right pane.
+                # This prevents a similarly named item in the left navigation tree
+                # from ever becoming the click anchor.
+                if ($candidate.CenterX -lt ($snapshot.Width * 0.45) -or $candidate.CenterY -lt ($snapshot.Height * 0.45)) {
+                    continue
+                }
+                $header = $candidate
+                break
+            }
+
+            if ($null -ne $header) {
+                $rowX = [int][Math]::Round($header.CenterX)
+                # In the result grid the first data row starts approximately one
+                # row-height below the column header. Keep the same 22 px row pitch
+                # used by Lovion's grid navigation, but anchor it to OCR geometry.
+                $rowY = [int][Math]::Round($header.Y + $header.Height + 20 + ($boundedRowIndex * 22))
+                if ($rowX -ge 0 -and $rowX -lt $snapshot.Width -and $rowY -ge ($header.Y + $header.Height) -and $rowY -lt ($snapshot.Height - 100)) {
+                    Write-LovionBatchLog ("Trafo-resultaatrij {0} via OCR gevonden: kolomkop '{1}' op ({2},{3}), klik op ({4},{5})." -f ($boundedRowIndex + 1), $header.MatchedText, [int]$header.CenterX, [int]$header.CenterY, $rowX, $rowY)
+                    return [pscustomobject]@{
+                        X = $rowX
+                        Y = $rowY
+                        HeaderText = [string]$header.MatchedText
+                        HeaderX = [int][Math]::Round($header.CenterX)
+                        HeaderY = [int][Math]::Round($header.CenterY)
+                    }
+                }
+            }
+        }
+
+        Start-Sleep -Milliseconds $PollMilliseconds
+    } while ((Get-Date) -lt $deadline)
+
+    return $null
+}
+
 function Get-LovionSelectedCount {
     param([switch]$FastMouseMode)
 
     Assert-LovionAutomationNotCancelled
-    $counters = Get-LovionScreenCounters
+    # Geselecteerd is shown in Lovion's bottom-right status bar. The default
+    # counter crop only covers the upper-right pane, so use the full window
+    # after a transformer row click; otherwise a real selection can look like
+    # no selection and the workflow waits until it times out.
+    $counters = Get-LovionScreenCounters -FullWindow
     Assert-LovionAutomationNotCancelled
     if ($null -eq $counters -or $null -eq $counters.selected) {
         return $null
@@ -5819,12 +5887,18 @@ function Wait-LovionInitialStationQueryResults {
                 $changed = $true
             }
 
-            $resultCount = 0
-            if ($null -ne $snapshot.loaded) {
-                $resultCount = [Math]::Max($resultCount, [int]$snapshot.loaded)
+            # For the first station query, Aantal geladen is the number of
+            # transformer rows Lovion actually returned. Do not let a stale or
+            # broader Gefilterd value inflate that count; only use it when the
+            # loaded counter is unavailable.
+            $resultCount = if ($null -ne $snapshot.loaded) {
+                [Math]::Max(0, [int]$snapshot.loaded)
             }
-            if ($null -ne $snapshot.filtered) {
-                $resultCount = [Math]::Max($resultCount, [int]$snapshot.filtered)
+            elseif ($null -ne $snapshot.filtered) {
+                [Math]::Max(0, [int]$snapshot.filtered)
+            }
+            else {
+                0
             }
 
             # Require the post-query OCR to differ from the pre-click screen
@@ -6114,46 +6188,60 @@ function Open-LovionConnectionsForStation {
         [string]$StationNumber,
         [int]$StationIndex,
         [int]$StationCount,
-        [int]$TransformerIndex = 0
+        [int]$TransformerIndex = 0,
+        [Nullable[int]]$KnownTransformerCount,
+        [switch]$ReuseCurrentStationResults
     )
 
-    Set-LovionBatchStatus ("Station {0}/{1}: trafo {2} zoeken ({3})" -f $StationIndex, $StationCount, ($TransformerIndex + 1), $StationNumber)
-    Write-LovionBatchLog ("Stationsimport: station {0}/{1}, trafo {2} openen: {3}" -f $StationIndex, $StationCount, ($TransformerIndex + 1), $StationNumber)
+    $actionText = if ($ReuseCurrentStationResults) { 'volgende trafo uit bestaande resultaten' } else { 'trafo zoeken' }
+    Set-LovionBatchStatus ("Station {0}/{1}: trafo {2} {3} ({4})" -f $StationIndex, $StationCount, ($TransformerIndex + 1), $actionText, $StationNumber)
+    Write-LovionBatchLog ("Stationsimport: station {0}/{1}, trafo {2} openen ({3}): {4}" -f $StationIndex, $StationCount, ($TransformerIndex + 1), $actionText, $StationNumber)
 
     if ($null -eq (Wait-LovionScreenPattern -Pattern 'LS\s+Stroomtransformatorgroep' -TimeoutSeconds 25 -Description 'de startlijst LS Stroomtransformatorgroep')) {
         throw 'De startlijst LS Stroomtransformatorgroep is niet zichtbaar. Open deze lijst in Lovion voordat je de stationsimport start.'
     }
 
-    Invoke-LovionStationClick -X 1127 -Y 285 -WaitMilliseconds 180 -Description 'de stationslijst'
-    [LovionBatchInput]::Chord(0x11, 0x41)
-    Start-Sleep -Milliseconds 100
-    Assert-LovionAutomationNotCancelled
-    if (-not [LovionBatchInput]::TypeUnicodeText($StationNumber)) {
+    if ($ReuseCurrentStationResults) {
+        if ($null -eq $KnownTransformerCount -or [int]$KnownTransformerCount -lt 1) {
+            throw ("Station {0} heeft geen geldig eerder gelezen trafo-aantal voor hergebruik van de resultatenlijst." -f $StationNumber)
+        }
+        $initialResultCount = [Math]::Max(0, [int]$KnownTransformerCount)
+        Write-LovionBatchLog ("Station {0}: bestaande eerste resultaten hergebruiken; Aantal geladen={1}; geen nieuwe stationzoekactie." -f $StationNumber, $initialResultCount)
+    }
+    else {
+        Invoke-LovionStationClick -X 1127 -Y 285 -WaitMilliseconds 180 -Description 'de stationslijst'
+        [LovionBatchInput]::Chord(0x11, 0x41)
+        Start-Sleep -Milliseconds 100
         Assert-LovionAutomationNotCancelled
-        throw ("Stationnummer {0} kon niet in Lovion worden ingevoerd." -f $StationNumber)
-    }
-    if ($null -eq (Wait-LovionScreenPattern -Pattern ([regex]::Escape($StationNumber)) -TimeoutSeconds 30 -Description ("stationnummer {0}" -f $StationNumber))) {
-        throw ("Stationnummer {0} werd na het invoeren niet op het Lovion-scherm gevonden." -f $StationNumber)
-    }
-    Assert-LovionAutomationNotCancelled
+        if (-not [LovionBatchInput]::TypeUnicodeText($StationNumber)) {
+            Assert-LovionAutomationNotCancelled
+            throw ("Stationnummer {0} kon niet in Lovion worden ingevoerd." -f $StationNumber)
+        }
+        if ($null -eq (Wait-LovionScreenPattern -Pattern ([regex]::Escape($StationNumber)) -TimeoutSeconds 30 -Description ("stationnummer {0}" -f $StationNumber))) {
+            throw ("Stationnummer {0} werd na het invoeren niet op het Lovion-scherm gevonden." -f $StationNumber)
+        }
+        Assert-LovionAutomationNotCancelled
 
-    Invoke-LovionStationOcrClick -TargetText 'EXPLORE' -Description 'de tab EXPLORE' -TimeoutSeconds 30 -MinXRatio 0.00 -MaxXRatio 0.18 -MinYRatio 0.00 -MaxYRatio 0.10 -AfterClickMilliseconds 500
-    $preQuerySnapshot = Get-LovionScreenCounters -FullWindow
-    $preQueryRawText = if ($null -ne $preQuerySnapshot) { [string]$preQuerySnapshot.rawText } else { '' }
-    Invoke-LovionStationOcrClick -TargetText 'Start query' -Description 'Start query' -TimeoutSeconds 45 -MinXRatio 0.00 -MaxXRatio 0.22 -MinYRatio 0.04 -MaxYRatio 0.20 -FallbackRecordedX 78 -FallbackRecordedY 105 -FallbackAfterSeconds 5 -AfterClickMilliseconds 900
+        Invoke-LovionStationOcrClick -TargetText 'EXPLORE' -Description 'de tab EXPLORE' -TimeoutSeconds 30 -MinXRatio 0.00 -MaxXRatio 0.18 -MinYRatio 0.00 -MaxYRatio 0.10 -AfterClickMilliseconds 500
+        $preQuerySnapshot = Get-LovionScreenCounters -FullWindow
+        $preQueryRawText = if ($null -ne $preQuerySnapshot) { [string]$preQuerySnapshot.rawText } else { '' }
+        Invoke-LovionStationOcrClick -TargetText 'Start query' -Description 'Start query' -TimeoutSeconds 45 -MinXRatio 0.00 -MaxXRatio 0.22 -MinYRatio 0.04 -MaxYRatio 0.20 -FallbackRecordedX 78 -FallbackRecordedY 105 -FallbackAfterSeconds 5 -AfterClickMilliseconds 900
 
-    $initialQueryCounters = Wait-LovionInitialStationQueryResults -PreviousRawText $preQueryRawText -TimeoutSeconds 45
-    if ($null -eq $initialQueryCounters) {
-        throw "De eerste zoekresultaten voor station $StationNumber konden na Start query niet betrouwbaar worden gelezen."
+        $initialQueryCounters = Wait-LovionInitialStationQueryResults -PreviousRawText $preQueryRawText -TimeoutSeconds 45
+        if ($null -eq $initialQueryCounters) {
+            throw "De eerste zoekresultaten voor station $StationNumber konden na Start query niet betrouwbaar worden gelezen."
+        }
+        # Aantal geladen is the authoritative transformer count. Gefilterd is only
+        # a fallback for older Lovion views that do not expose the loaded counter.
+        $initialResultCount = 0
+        if ($null -ne $initialQueryCounters.loaded) {
+            $initialResultCount = [Math]::Max(0, [int]$initialQueryCounters.loaded)
+        }
+        elseif ($null -ne $initialQueryCounters.filtered) {
+            $initialResultCount = [Math]::Max(0, [int]$initialQueryCounters.filtered)
+        }
+        Write-LovionBatchLog ("Eerste zoekresultaten station {0}: Aantal geladen={1}, gefilterd={2}; trafo's te verwerken={3}." -f $StationNumber, $initialQueryCounters.loaded, $initialQueryCounters.filtered, $initialResultCount)
     }
-    $initialResultCount = 0
-    if ($null -ne $initialQueryCounters.loaded) {
-        $initialResultCount = [Math]::Max($initialResultCount, [int]$initialQueryCounters.loaded)
-    }
-    if ($null -ne $initialQueryCounters.filtered) {
-        $initialResultCount = [Math]::Max($initialResultCount, [int]$initialQueryCounters.filtered)
-    }
-    Write-LovionBatchLog ("Eerste zoekresultaten station {0}: geladen={1}, gefilterd={2}." -f $StationNumber, $initialQueryCounters.loaded, $initialQueryCounters.filtered)
     if ($TransformerIndex -lt 0 -or $TransformerIndex -ge $initialResultCount) {
         throw ("Station {0} heeft {1} eerste zoekresultaten, maar trafo-index {2} werd gevraagd." -f $StationNumber, $initialResultCount, $TransformerIndex)
     }
@@ -6161,14 +6249,29 @@ function Open-LovionConnectionsForStation {
         throw ("Station {0} heeft meer dan 14 eerste zoekresultaten; trafo {1} kan niet betrouwbaar in beeld worden geselecteerd." -f $StationNumber, ($TransformerIndex + 1))
     }
 
-    # A station can contain more than one transformer. Select exactly one
-    # result before Open so each transformer gets its own network trace.
-    if (-not (Invoke-LovionClickRow -VisibleRowIndex $TransformerIndex)) {
-        throw ("Trafo {0} van station {1} kon niet in de eerste resultatenlijst worden geselecteerd." -f ($TransformerIndex + 1), $StationNumber)
+    if ($initialResultCount -eq 1) {
+        # With exactly one loaded result Lovion can open the active/default row
+        # directly. Clicking the row is both unnecessary and unreliable in the
+        # Citrix layout (it can hit the left navigation tree instead).
+        Write-LovionBatchLog ("Station {0}: Aantal geladen=1; trafo-rij niet aangeklikt, direct Open > VIEW." -f $StationNumber)
     }
-    $selectedTransformerCount = Wait-LovionSelectedCount -TargetCount 1 -TimeoutSeconds 20
-    if ($selectedTransformerCount -ne 1) {
-        throw ("Trafo {0} van station {1} werd niet als één geselecteerde rij herkend; teller={2}." -f ($TransformerIndex + 1), $StationNumber, $selectedTransformerCount)
+    else {
+        # With multiple transformers, select exactly one result before Open so
+        # each transformer gets its own network trace. The result-table anchor
+        # is found via OCR; the generic connection-grid click would land in the
+        # navigation tree on the left side of this screen.
+        $transformerRowPoint = Wait-LovionTransformerResultRowPoint -VisibleRowIndex $TransformerIndex -TimeoutSeconds 35
+        if ($null -eq $transformerRowPoint) {
+            throw ("Trafo {0} van station {1} kon niet in de eerste resultatenlijst worden geselecteerd." -f ($TransformerIndex + 1), $StationNumber)
+        }
+        # Invoke-LovionStationClick throws when the native click fails. It does
+        # not return $true on success, so do not wrap it in a boolean test: a
+        # successful click must continue directly to Open > VIEW.
+        Invoke-LovionStationClick -X $transformerRowPoint.X -Y $transformerRowPoint.Y -WaitMilliseconds 450 -Description ("trafo-resultaatrij {0}" -f ($TransformerIndex + 1))
+        $selectedTransformerCount = Wait-LovionSelectedCount -TargetCount 1 -TimeoutSeconds 20
+        if ($selectedTransformerCount -ne 1) {
+            throw ("Trafo {0} van station {1} werd niet als één geselecteerde rij herkend; teller={2}." -f ($TransformerIndex + 1), $StationNumber, $selectedTransformerCount)
+        }
     }
 
     Invoke-LovionStationOcrClick -TargetText 'Open' -Description 'de tab Open' -TimeoutSeconds 30 -MinXRatio 0.00 -MaxXRatio 0.18 -MinYRatio 0.00 -MaxYRatio 0.10 -AfterClickMilliseconds 500
@@ -6251,7 +6354,20 @@ function Invoke-LovionStationsImportCore {
             $transformerIndex = 0
             $transformerCount = 1
             do {
-                $stationOpenResult = Open-LovionConnectionsForStation -StationNumber $station -StationIndex ($index + 1) -StationCount $stationCount -TransformerIndex $transformerIndex
+                $stationOpenParameters = @{
+                    StationNumber = $station
+                    StationIndex = ($index + 1)
+                    StationCount = $stationCount
+                    TransformerIndex = $transformerIndex
+                }
+                if ($transformerIndex -gt 0) {
+                    # Close-LovionStationResultTabs returns to the first page of
+                    # this station's already loaded results. Reuse that page for
+                    # transformer 2+ instead of searching the station again.
+                    $stationOpenParameters['KnownTransformerCount'] = $transformerCount
+                    $stationOpenParameters['ReuseCurrentStationResults'] = $true
+                }
+                $stationOpenResult = Open-LovionConnectionsForStation @stationOpenParameters
                 if ($null -ne $stationOpenResult -and $stationOpenResult.InitialResultCount -gt 0) {
                     $transformerCount = [Math]::Max(1, [int]$stationOpenResult.InitialResultCount)
                 }
