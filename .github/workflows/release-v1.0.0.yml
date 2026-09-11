@@ -2,10 +2,8 @@ name: Release v1.1.0
 
 on:
   push:
-    branches:
-      - main
-    paths:
-      - .github/workflows/release-v1.1.0.yml
+    tags:
+      - v1.1.0
 
 permissions:
   contents: write
