@@ -22,6 +22,12 @@ if (Test-Path -Path $exePath) {
 
 $scriptPath = Join-Path $scriptRoot 'LovionCoordinateTool.Gui.ps1'
 $scriptText = Get-Content -Path $scriptPath -Raw -Encoding UTF8
+$macroPath = Join-Path $scriptRoot 'assets\Trafo zoeken macro rapport.xml'
+if (-not (Test-Path -LiteralPath $macroPath -PathType Leaf)) {
+    throw "Het Lovion-macrobestand ontbreekt: $macroPath"
+}
+$macroBytes = [System.IO.File]::ReadAllBytes($macroPath)
+$macroBase64 = [Convert]::ToBase64String($macroBytes)
 
 # De standalone EXE voert het ingebedde script uit vanuit een tijdelijke map.
 # Laat configuratie en logs toch naast de EXE terechtkomen in plaats van in %TEMP%.
@@ -31,6 +37,12 @@ if (-not $scriptText.Contains($originalDirectoryLine)) {
     throw 'Kan ScriptDirectory-regel niet vinden in LovionCoordinateTool.Gui.ps1.'
 }
 $scriptText = $scriptText.Replace($originalDirectoryLine, $embeddedDirectoryLine)
+$originalMacroLine = '$script:EmbeddedLovionMacroXmlBase64 = $null'
+$embeddedMacroLine = '$script:EmbeddedLovionMacroXmlBase64 = ''' + $macroBase64 + ''''
+if (-not $scriptText.Contains($originalMacroLine)) {
+    throw 'Kan de macro-embedregel niet vinden in LovionCoordinateTool.Gui.ps1.'
+}
+$scriptText = $scriptText.Replace($originalMacroLine, $embeddedMacroLine)
 
 # Comprimeer het script voordat het in de launcher wordt ingebed. Dit houdt de C#-bron
 # en de uiteindelijke EXE compact, terwijl er geen los .ps1-bestand hoeft te worden meegeleverd.

@@ -17,9 +17,7 @@ Daarnaast is er nu een GUI-workbench:
 * meerdere bestanden tegelijk laden
 * geplakte tekst toevoegen via een knop of direct vanuit het klembord importeren, met eigen `SourceFile`-naam
 * meerdere stations achter elkaar openen en alle LS-aansluitingen per station via de knop `Stations` importeren
-* adressen in de grid direct geocoderen via `PDOK`
-* rijen daarna direct snappen naar de officiële Enexis `WFS`
-* street-furniture termen beheren via een eigen termen-menu
+* Lovion-macro-informatie tonen en het bestand `Trafo zoeken macro rapport.xml` downloaden voor import via Lovion `Rapporten importeren`
 * alle aansluitingen bewerken in een grid
 * exporteren naar `csv`, `geojson` en `shapefile`
 
@@ -198,6 +196,20 @@ Alle belangrijke stappen worden naar `LovionBatch.log` geschreven, waaronder OCR
 
 De bestaande kaartmarkerfallback kan na een mislukte centrale kaartklik nog gele markers proberen en heeft een aparte handmatige-melding voor ambigue kaartresultaten. Die situatie staat los van de trafo-verwerking: meerdere resultaten in de eerste stationquery worden nu wel afzonderlijk geopend, terwijl ambigue kaartmarkers nog handmatige toevoeging aan de Workbench kunnen vereisen.
 
+## Lovion-macro
+
+De knop `Lovion macro` toont de installatie-informatie voor de macro `Trafo zoeker Macro` en biedt `XML downloaden`. De knop slaat de meegeleverde macro op als `Trafo zoeken macro rapport.xml`; de XML zit bij een standalone EXE ingebouwd, zodat de knop ook werkt zonder een los bronbestand naast de EXE.
+
+Installeer de macro in Lovion/Citrix als volgt:
+
+1. Klik in de Workbench op `Lovion macro` en daarna op `XML downloaden`.
+2. Open in Lovion de functie `Rapporten importeren`.
+3. Selecteer het opgeslagen XML-bestand en importeer/installeer de macro.
+4. Controleer in Lovion onder `GEN > Elektriciteit > LS stroomtransformatorgroep` of `Trafo zoeker Macro` zichtbaar is.
+5. Gebruik de parameter `Station` om een stationnummer in te vullen.
+
+De macro vereist Lovion release `7.2.1` of nieuwer. De daadwerkelijke import vindt plaats in de native Lovion/Citrix-app; de Workbench levert het gevalideerde XML-bestand en de instructies.
+
 ### Getest gedrag
 
 De basisroute is live op de Citrix-Lovion-app getest met de opgegeven stations. In de brede test werden 1.735 aansluitingen verwerkt; onder andere `017.525` als `100 + 21`, `017.519` als `100 + 100 + 22` en `017.577` als `100 + 100 + 75`. Daarbij leverde `017.545` twee eerste zoekresultaten op (`geladen=2`, `gefilterd=2`); de oude skipcontrole is met deze wijziging vervangen door twee afzonderlijke trafo-cycli. De nieuwe multi-trafo-lus is met een gecontroleerde PowerShell-mocktest gevalideerd: twee `Open`-cycli, twee imports met dezelfde `SourceFile` `017.545`, 84 mock-aansluitingen totaal en twee sluitcycli.
@@ -211,6 +223,7 @@ Daarnaast zijn de PowerShell-smoketest, `git diff --check`, de standalone GUI-EX
 | Bestand | Rol |
 | --- | --- |
 | `LovionCoordinateTool.Gui.ps1` | Hoofdbronbestand van de GUI, OCR, muis-/toetsenbordinvoer en stationsworkflow. |
+| `assets/Trafo zoeken macro rapport.xml` | Bronbestand van de Lovion-macro `Trafo zoeker Macro`; wordt bij de GUI-build in de EXE ingebouwd. |
 | `Get-LovionCoordinates.ps1` | Losse CLI voor adresverrijking en export; dit bestand wordt niet gebruikt door de knop `Stations`. |
 | `Build-LovionCoordinateToolGuiExe.ps1` | Bouwt de standalone `LovionCoordinateWorkbench.exe` en embedt de GUI-broncode. |
 | `Build-LovionCoordinateToolExe.ps1` | Bouwt de oudere CLI-EXE voor de niet-GUI workflow. |
@@ -252,9 +265,12 @@ Voer vanuit de repository uit:
 
 ```powershell
 PowerShell -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-LovionStationWorkflow.ps1
+PowerShell -NoProfile -Sta -ExecutionPolicy Bypass -File .\tests\Test-LovionMacro.ps1
+PowerShell -NoProfile -Sta -ExecutionPolicy Bypass -File .\tests\Test-GuiSurface.ps1
 PowerShell -NoProfile -Sta -ExecutionPolicy Bypass -File .\LovionCoordinateTool.Gui.ps1 -SmokeTest
 PowerShell -NoProfile -ExecutionPolicy Bypass -File .\Build-LovionCoordinateToolGuiExe.ps1 -OutputDirectory .\dist-test
 .\dist-test\LovionCoordinateWorkbench.exe -SmokeTest
+.\dist-test\LovionCoordinateWorkbench.exe -MacroSmokeTest
 git diff --check
 ```
 
@@ -287,6 +303,13 @@ Daarna staat de GUI-launcher hier:
 
 * `.\dist\LovionCoordinateWorkbench.exe`
 
+### Verschil tussen `Klembord` en `Plakken`
+
+* `Klembord` leest de huidige tekst op het Windows-klembord direct uit en importeert die na het opgeven van een `SourceFile`-naam. Dit is de snelle route wanneer de Lovion-export al klaarstaat.
+* `Plakken` opent eerst een groot bewerkvenster. Daar kun je tekst handmatig plakken of met `Haal Uit Klembord` ophalen, controleren en aanpassen voordat je op `Toevoegen` klikt en een `SourceFile`-naam opgeeft. Dit is de veilige route voor grote exports of tekst die eerst opgeschoond moet worden.
+
+Beide routes gebruiken daarna dezelfde Lovion-tekstparser en voegen de herkende rijen aan de huidige grid toe. Geen van beide knoppen wist bestaande rijen automatisch.
+
 Wat de GUI kan:
 
 * meerdere `txt`, `xlsx` en `csv` bestanden tegelijk laden
@@ -294,22 +317,15 @@ Wat de GUI kan:
 * `Klembord Import` om de huidige clipboardtekst direct toe te voegen, met een eigen `SourceFile`-naam
 * `Plakvenster` voor grote Lovion-tekstexports die je eerst wilt bekijken of handmatig wilt aanpassen, ook met een eigen `SourceFile`-naam
 * `Stations` vraagt een lijst stationnummers, zoekt ieder station één keer vanuit de Lovion-lijst `LS stroomtransformatorgroep`, opent de eerste trafo via `EXPLORE > Start query > Open > VIEW` en importeert alle aansluitingen met de bestaande 100-regelmethode; meerdere trafos worden daarna uit dezelfde geladen eerste resultatenlijst geopend zonder opnieuw te zoeken, terwijl `SourceFile` exact het stationnummer blijft zonder batchnummer erachter
-* `Geocodeer PDOK` om rijen zonder coordinaten op adres te verrijken
-* `Geocodeer PDOK` gebruikt nu standaard parallelle requests voor unieke adresqueries, waardoor grote lijsten merkbaar sneller lopen
-* `Geocodeer PDOK` gebruikt nu een veldgerichte query op `straatnaam`, `huisnummer`, `postcode` en `woonplaatsnaam`, gefilterd op `type:adres` en `bron:BAG`
-* als die strakke PDOK-query niets oplevert, probeert de workbench automatisch eenvoudigere fallback-queries zonder toevoeging of als losse adresregel
-* `Snap Enexis` om alleen specifieke `Gebruiksdoelen` naar `street_furniture` te zetten en de rest naar `service_connection`
-* `Snap Enexis` gebruikt nu unieke Enexis-punten; een punt of feature wordt dus maar aan één rij toegewezen
-* `Bouwaansluiting` wordt altijd als `service_connection` behandeld en krijgt bij hetzelfde adres pas na de andere aansluitingen een vrije `service_connection`
-* `Snap Enexis` gebruikt nu ook een ruimtelijke index, zodat grote lijsten veel sneller snappen dan bij een volledige scan over alle features per rij
-* `Street Terms` of `Instellingen > Street Terms` om de woordenlijst voor `street_furniture` te beheren
+* `Lovion macro` toont de installatie-informatie voor `Trafo zoeker Macro` onder `GEN > Elektriciteit > LS stroomtransformatorgroep` en slaat met `XML downloaden` het gevalideerde XML-bestand op voor Lovion `Rapporten importeren`
 * bewerkbare grid voor alle aansluitingen
-* `Herlees Coords` om `Overdrachtspunt` of `FinalRdX/FinalRdY` opnieuw te verwerken
 * export van de huidige grid naar `csv`, `geojson` en `shapefile`
 * shapefile gebruikt voor tekstexports expliciet `OverdrachtspuntRdX1` en `OverdrachtspuntRdY1`
 * shapefile-export schrijft ook een `*_fieldmap.csv` weg
 
 De GUI-build embedt het PowerShell-script in de exe. Op een Windows-machine met PowerShell start je dus in de praktijk met alleen `LovionCoordinateWorkbench.exe`.
+
+De GUI-build embedt ook de macro-XML in de exe. Daardoor is voor de knop `Lovion macro` geen los XML-bestand naast de release-EXE nodig. In Lovion/Citrix moet de gebruiker de opgeslagen XML daarna nog zelf via `Rapporten importeren` installeren.
 
 ## Belangrijk
 
@@ -319,9 +335,9 @@ De GUI-build embedt het PowerShell-script in de exe. Op een Windows-machine met 
 * `CoordinateSource = overdrachtspunt_text` betekent: punt komt direct uit het `Overdrachtspunt` in de tekstexport.
 * `PdokStrictMatch = False` met `PdokMatchReason = house_suffix_mismatch` is geen perfecte match, maar wordt wel als tolerante adresmatch gebruikt.
 * `service_connection_point_already_used_keep_seed` of `street_furniture_point_already_used_keep_seed` betekent: er was wel een kandidaat, maar die lag al vast op een eerdere rij; de rij houdt dan zijn seed-coordinaat.
-* In de GUI geldt nu: alleen `Gebruiksdoelen` die matchen op de ingestelde street-furniture termen zoals `riool`, `camera`, `verlichting`, `container` gaan naar `Enexis_Opendata:asm_e_lv_street_furniture`.
+* In de parser geldt: alleen `Gebruiksdoelen` die matchen op de ingestelde street-furniture termen zoals `riool`, `camera`, `verlichting`, `container` gaan naar `Enexis_Opendata:asm_e_lv_street_furniture`.
 * Alle andere `Gebruiksdoelen` gaan naar `Enexis_Opendata:asm_e_lv_service_connection`.
-* Die termen zijn in de GUI aanpasbaar en worden opgeslagen in `street_furniture_terms.json` naast de exe of naast het script.
+* Die termen worden gelezen uit `street_furniture_terms.json` naast de exe of naast het script. De voormalige GUI-knoppen voor PDOK, Enexis, Terms en Herlees zijn verwijderd; de onderliggende functies blijven in de broncode staan voor compatibiliteit.
 * Matching op die termen is niet hoofdlettergevoelig en mag overal in `Gebruiksdoel` voorkomen.
 * `Bouwaansluiting` is hiervan uitgezonderd en blijft altijd `service_connection`, ook als iemand die term in de termenlijst probeert te zetten.
 * Voor `street_furniture` matcht de tool eerst op `omschrijving ~= gebruiksdoel` en daarna op afstand.

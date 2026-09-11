@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [switch]$SmokeTest
+    [switch]$SmokeTest,
+    [switch]$MacroSmokeTest
 )
 
 Set-StrictMode -Version Latest
@@ -1186,6 +1187,8 @@ public static class LovionBatchInput
 
 $script:AppName = 'Lovion Coordinate Tool'
 $script:ScriptDirectory = if ([string]::IsNullOrWhiteSpace($PSScriptRoot)) { (Get-Location).Path } else { $PSScriptRoot }
+$script:EmbeddedLovionMacroXmlBase64 = $null
+$script:LovionMacroRelativePath = Join-Path -Path 'assets' -ChildPath 'Trafo zoeken macro rapport.xml'
 $script:CurrentDirectory = (Get-Location).Path
 $script:Table = New-Object System.Data.DataTable 'Connections'
 $script:Grid = $null
@@ -3853,6 +3856,155 @@ function Import-TextContentFromPaste {
     Add-RowsToTable -Rows $prepared
 }
 
+function Get-LovionMacroBytes {
+    if (-not [string]::IsNullOrWhiteSpace([string]$script:EmbeddedLovionMacroXmlBase64)) {
+        try {
+            $embeddedBytes = [Convert]::FromBase64String([string]$script:EmbeddedLovionMacroXmlBase64)
+            return ,([byte[]]$embeddedBytes)
+        }
+        catch {
+            throw "De ingebouwde Lovion-macro kon niet worden gelezen: $($_.Exception.Message)"
+        }
+    }
+
+    $macroPath = Join-Path -Path $script:ScriptDirectory -ChildPath $script:LovionMacroRelativePath
+    if (-not (Test-Path -LiteralPath $macroPath -PathType Leaf)) {
+        throw "Het Lovion-macrobestand ontbreekt: $macroPath"
+    }
+    return ,([System.IO.File]::ReadAllBytes($macroPath))
+}
+
+function Get-LovionMacroXml {
+    [byte[]]$macroBytes = Get-LovionMacroBytes
+    return [System.Text.Encoding]::UTF8.GetString($macroBytes)
+}
+
+function Export-LovionMacroXml {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $parsedXml = [xml](Get-LovionMacroXml)
+    if ($null -eq $parsedXml.Reports) {
+        throw 'Het Lovion-macrobestand heeft geen geldige Reports-root.'
+    }
+    [byte[]]$macroBytes = Get-LovionMacroBytes
+    [System.IO.File]::WriteAllBytes($Path, $macroBytes)
+    return $Path
+}
+
+function Show-LovionMacroDialog {
+    try {
+        [xml]$macro = Get-LovionMacroXml
+        $report = $macro.Reports.Report
+        $macroName = [string]$report.Localizations.Localization.externalName
+        $minimumRelease = [string]$macro.Reports.LovionFileFormat.Version.minRelease
+        if ([string]::IsNullOrWhiteSpace($macroName)) {
+            $macroName = 'Trafo zoeker Macro'
+        }
+        if ([string]::IsNullOrWhiteSpace($minimumRelease)) {
+            $minimumRelease = '7.2.1'
+        }
+    }
+    catch {
+        Show-ErrorMessage $_.Exception.Message
+        return
+    }
+
+    $dialog = New-Object System.Windows.Forms.Form
+    $dialog.Text = 'Lovion macro installeren'
+    $dialog.StartPosition = 'CenterParent'
+    $dialog.Size = New-Object System.Drawing.Size(780, 570)
+    $dialog.MinimumSize = New-Object System.Drawing.Size(780, 570)
+    $dialog.MaximizeBox = $false
+    $dialog.MinimizeBox = $false
+    $dialog.FormBorderStyle = 'FixedDialog'
+    $dialog.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#f8f6f0')
+
+    $infoLabel = New-Object System.Windows.Forms.Label
+    $infoLabel.Text = "Lovion-macro: $macroName"
+    $infoLabel.Location = New-Object System.Drawing.Point(16, 16)
+    $infoLabel.Size = New-Object System.Drawing.Size(730, 28)
+    $infoLabel.Font = New-Object System.Drawing.Font('Segoe UI Semibold', 12)
+
+    $details = New-Object System.Windows.Forms.RichTextBox
+    $details.Location = New-Object System.Drawing.Point(16, 54)
+    $details.Size = New-Object System.Drawing.Size(730, 414)
+    $details.Anchor = 'Top,Bottom,Left,Right'
+    $details.ReadOnly = $true
+    $details.BackColor = [System.Drawing.Color]::White
+    $details.BorderStyle = 'FixedSingle'
+    $details.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+    $details.DetectUrls = $false
+    $details.ScrollBars = 'Vertical'
+    $details.Text = @"
+Deze macro hoort in Lovion onder:
+GEN > Elektriciteit > LS stroomtransformatorgroep
+
+Installeren in Lovion/Citrix:
+1. Klik hieronder op 'XML downloaden' en sla het bestand op.
+2. Open in Lovion de functie 'Rapporten importeren'.
+3. Selecteer het opgeslagen XML-bestand en importeer/installeer de macro.
+4. Controleer daarna onder LS stroomtransformatorgroep of '$macroName' zichtbaar is.
+5. Gebruik bij het uitvoeren de parameter 'Station' en vul het stationnummer in.
+
+Compatibiliteit: Lovion release $minimumRelease of nieuwer.
+
+De Coordinate Tool levert het juiste XML-bestand en de installatie-informatie.
+De daadwerkelijke import wordt in de native Lovion/Citrix-app uitgevoerd.
+"@
+
+    $buttonPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $buttonPanel.Dock = 'Bottom'
+    $buttonPanel.Height = 58
+    $buttonPanel.FlowDirection = 'RightToLeft'
+    $buttonPanel.Padding = New-Object System.Windows.Forms.Padding(8)
+
+    $closeButton = New-Object System.Windows.Forms.Button
+    $closeButton.Text = 'Sluiten'
+    $closeButton.Width = 110
+    $closeButton.Height = 32
+
+    $downloadButton = New-Object System.Windows.Forms.Button
+    $downloadButton.Text = 'XML downloaden'
+    $downloadButton.Width = 155
+    $downloadButton.Height = 32
+    $downloadButton.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#184e77')
+    $downloadButton.ForeColor = [System.Drawing.Color]::White
+    $downloadButton.FlatStyle = 'Flat'
+
+    $buttonPanel.Controls.AddRange(@($closeButton, $downloadButton))
+    $dialog.Controls.AddRange(@($infoLabel, $details, $buttonPanel))
+
+    $closeButton.Add_Click({
+        $dialog.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+        $dialog.Close()
+    })
+
+    $downloadButton.Add_Click({
+        try {
+            $saveDialog = New-Object System.Windows.Forms.SaveFileDialog
+            $saveDialog.Title = 'Lovion macro XML opslaan'
+            $saveDialog.InitialDirectory = $script:CurrentDirectory
+            $saveDialog.Filter = 'Lovion macro XML (*.xml)|*.xml|Alle bestanden|*.*'
+            $saveDialog.FileName = 'Trafo zoeken macro rapport.xml'
+            if ($saveDialog.ShowDialog($dialog) -eq [System.Windows.Forms.DialogResult]::OK) {
+                Export-LovionMacroXml -Path $saveDialog.FileName | Out-Null
+                Show-InfoMessage "Lovion-macro opgeslagen:`n$($saveDialog.FileName)`n`nImporteer dit bestand daarna in Lovion via 'Rapporten importeren'."
+            }
+            $saveDialog.Dispose()
+        }
+        catch {
+            Show-ErrorMessage $_.Exception.Message
+        }
+    })
+
+    $dialog.AcceptButton = $downloadButton
+    $dialog.CancelButton = $closeButton
+    [void]$dialog.ShowDialog($script:MainForm)
+}
+
 function Show-SourceNameDialog {
     param(
         [string]$DefaultName,
@@ -6483,20 +6635,6 @@ function Build-MainForm {
         $script:FrontTimer.Start()
     })
 
-    $menuStrip = New-Object System.Windows.Forms.MenuStrip
-    $menuStrip.Dock = 'Top'
-    $menuStrip.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#efe9dc')
-
-    $settingsMenu = New-Object System.Windows.Forms.ToolStripMenuItem
-    $settingsMenu.Text = 'Instellingen'
-
-    $streetTermsMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
-    $streetTermsMenuItem.Text = 'Street Terms'
-
-    [void]$settingsMenu.DropDownItems.Add($streetTermsMenuItem)
-    [void]$menuStrip.Items.Add($settingsMenu)
-    $form.MainMenuStrip = $menuStrip
-
     $headerPanel = New-Object System.Windows.Forms.Panel
     $headerPanel.Dock = 'Top'
     $headerPanel.Height = 80
@@ -6510,7 +6648,7 @@ function Build-MainForm {
     $titleLabel.AutoSize = $true
 
     $subtitleLabel = New-Object System.Windows.Forms.Label
-    $subtitleLabel.Text = 'Laad bestanden, beheer street-furniture termen, geocodeer via PDOK en snap naar Enexis.'
+    $subtitleLabel.Text = 'Laad bestanden, importeer Lovion-gegevens en exporteer resultaten.'
     $subtitleLabel.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#d6e2e9')
     $subtitleLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9.5)
     $subtitleLabel.Location = New-Object System.Drawing.Point(22, 48)
@@ -6553,10 +6691,7 @@ function Build-MainForm {
     $pasteButton = New-ToolbarButton -Text 'Plakken' -BackColor '#2a9d8f' -Width 90
     $lovionBatchButton = New-ToolbarButton -Text 'Lovion 100' -BackColor '#bc6c25' -Width 105
     $stationsButton = New-ToolbarButton -Text 'Stations' -BackColor '#9b5d24' -Width 95
-    $pdokButton = New-ToolbarButton -Text 'PDOK' -BackColor '#3c6e71' -Width 85
-    $wfsButton = New-ToolbarButton -Text 'Enexis' -BackColor '#284b63' -Width 95
-    $termsButton = New-ToolbarButton -Text 'Terms' -BackColor '#4d6c50' -Width 85
-    $refreshCoordsButton = New-ToolbarButton -Text 'Herlees' -BackColor '#679289' -Width 90
+    $lovionMacroButton = New-ToolbarButton -Text 'Lovion macro' -BackColor '#6a4c93' -Width 115
     $removeButton = New-ToolbarButton -Text 'Verwijder' -BackColor '#9c6644' -Width 95
     $clearButton = New-ToolbarButton -Text 'Wis' -BackColor '#7f5539' -Width 70
     $csvButton = New-ToolbarButton -Text 'CSV' -BackColor '#386641' -Width 70
@@ -6569,10 +6704,7 @@ function Build-MainForm {
         $pasteButton,
         $lovionBatchButton,
         $stationsButton,
-        $pdokButton,
-        $wfsButton,
-        $termsButton,
-        $refreshCoordsButton,
+        $lovionMacroButton,
         $removeButton,
         $clearButton,
         $csvButton,
@@ -6619,11 +6751,7 @@ function Build-MainForm {
     $pasteButton.Add_Click({ Show-PasteDialog })
     $lovionBatchButton.Add_Click({ Start-LovionBatchImport })
     $stationsButton.Add_Click({ Start-LovionStationsImport })
-    $pdokButton.Add_Click({ Geocode-GridViaPdok })
-    $wfsButton.Add_Click({ Snap-GridToEnexisWfs })
-    $termsButton.Add_Click({ Show-StreetFurnitureTermsDialog })
-    $streetTermsMenuItem.Add_Click({ Show-StreetFurnitureTermsDialog })
-    $refreshCoordsButton.Add_Click({ Refresh-CoordinatesFromGrid })
+    $lovionMacroButton.Add_Click({ Show-LovionMacroDialog })
     $removeButton.Add_Click({ Remove-SelectedRows })
     $clearButton.Add_Click({ Clear-AllRows })
 
@@ -6690,7 +6818,6 @@ function Build-MainForm {
     $form.Controls.Add($statusStrip)
     $form.Controls.Add($toolbarPanel)
     $form.Controls.Add($headerPanel)
-    $form.Controls.Add($menuStrip)
 
     $script:Grid = $grid
     $script:StatusLabel = $statusLabel
@@ -6735,6 +6862,24 @@ function Build-MainForm {
 
 if ($MyInvocation.InvocationName -eq '.') {
     return
+}
+
+if ($MacroSmokeTest) {
+    try {
+        [xml]$macroSmokeTestXml = Get-LovionMacroXml
+        if ($macroSmokeTestXml.DocumentElement.Name -ne 'Reports') {
+            throw 'De ingebouwde Lovion-macro heeft geen geldige Reports-root.'
+        }
+        if ($macroSmokeTestXml.Reports.Report.Localizations.Localization.externalName -ne 'Trafo zoeker Macro') {
+            throw 'De ingebouwde Lovion-macronaam klopt niet.'
+        }
+        Write-Output 'Embedded Lovion macro: PASS'
+        exit 0
+    }
+    catch {
+        Write-Error $_.Exception.Message
+        exit 1
+    }
 }
 
 [LovionBatchInput]::EnableDpiAwareness()

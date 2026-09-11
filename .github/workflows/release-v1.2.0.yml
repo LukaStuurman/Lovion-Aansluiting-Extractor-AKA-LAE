@@ -1,9 +1,9 @@
-name: Release v1.2.0
+name: Release v1.3.0
 
 on:
   push:
     tags:
-      - v1.2.0
+      - v1.3.0
 
 permissions:
   contents: write
@@ -34,6 +34,19 @@ jobs:
             throw "LovionCoordinateWorkbench.exe smoke test faalde met exitcode $($process.ExitCode)."
           }
 
+      - name: Smoke test embedded Lovion macro
+        shell: powershell
+        run: |
+          $process = Start-Process `
+            -FilePath ".\dist\LovionCoordinateWorkbench.exe" `
+            -ArgumentList "-MacroSmokeTest" `
+            -PassThru `
+            -Wait
+
+          if ($process.ExitCode -ne 0) {
+            throw "De ingebouwde Lovion-macrotest faalde met exitcode $($process.ExitCode)."
+          }
+
       - name: Prepare release notes
         shell: powershell
         run: |
@@ -41,9 +54,14 @@ jobs:
           New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
 
           $notes = @'
-          # Lovion Aansluiting Extractor v1.2.0
+          # Lovion Aansluiting Extractor v1.3.0
 
           Deze release bevat de robuuste Lovion/Citrix-stationsworkflow.
+
+          ## Lovion-macro
+          - De GUI bevat de knop `Lovion macro` met installatie-informatie voor `GEN > Elektriciteit > LS stroomtransformatorgroep`.
+          - Via `XML downloaden` kan `Trafo zoeken macro rapport.xml` worden opgeslagen voor Lovion `Rapporten importeren`.
+          - De macro-XML is in de standalone EXE ingebouwd.
 
           ## Stationsworkflow
           - `Aantal geladen` bepaalt hoeveel trafo's bij een station horen.
@@ -57,7 +75,7 @@ jobs:
           ## Download
           - `LovionCoordinateWorkbench.exe` - standalone Windows GUI-versie.
 
-          De Workbench bevat het benodigde PowerShell-applicatiescript ingebed in de EXE. Er zijn geen losse scripts, CLI-versies of ZIP-bestanden nodig.
+          De Workbench bevat het benodigde PowerShell-applicatiescript en de Lovion-macro-XML ingebed in de EXE. Er zijn geen losse scripts, CLI-versies of ZIP-bestanden nodig.
           '@
           [System.IO.File]::WriteAllText((Join-Path $releaseDir 'RELEASE_NOTES.md'), $notes, [System.Text.Encoding]::ASCII)
 
@@ -68,49 +86,49 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
-          # Houd de v1.2.0-tag gelijk aan de code waarmee de standalone EXE is gebouwd.
+          # Houd de v1.3.0-tag gelijk aan de code waarmee de standalone EXE is gebouwd.
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -f v1.2.0 "$env:GITHUB_SHA"
-          git push origin "refs/tags/v1.2.0" --force
+          git tag -f v1.3.0 "$env:GITHUB_SHA"
+          git push origin "refs/tags/v1.3.0" --force
 
           # Een ontbrekende release is normaal bij de eerste publicatie.
           # Laat gh's exitcode wel uitlezen zonder dat PowerShell de stderr als exception behandelt.
           $savedErrorActionPreference = $ErrorActionPreference
           $ErrorActionPreference = 'Continue'
-          gh release view v1.2.0 --repo "$env:GITHUB_REPOSITORY" *> $null
+          gh release view v1.3.0 --repo "$env:GITHUB_REPOSITORY" *> $null
           $releaseExists = ($LASTEXITCODE -eq 0)
           $ErrorActionPreference = $savedErrorActionPreference
 
           if ($releaseExists) {
             # Verwijder alle oude release-assets. Alleen de Workbench EXE blijft over.
-            $assetNames = @(gh release view v1.2.0 `
+            $assetNames = @(gh release view v1.3.0 `
               --repo "$env:GITHUB_REPOSITORY" `
               --json assets `
               --jq '.assets[].name')
 
             foreach ($assetName in $assetNames) {
               if (-not [string]::IsNullOrWhiteSpace($assetName)) {
-                gh release delete-asset v1.2.0 "$assetName" `
+                gh release delete-asset v1.3.0 "$assetName" `
                   --repo "$env:GITHUB_REPOSITORY" `
                   --yes
               }
             }
 
-            gh release edit v1.2.0 `
+            gh release edit v1.3.0 `
               --repo "$env:GITHUB_REPOSITORY" `
-              --title "Lovion Aansluiting Extractor v1.2.0" `
+              --title "Lovion Aansluiting Extractor v1.3.0" `
               --notes-file ".\release\RELEASE_NOTES.md"
 
-            gh release upload v1.2.0 `
+            gh release upload v1.3.0 `
               --repo "$env:GITHUB_REPOSITORY" `
               ".\dist\LovionCoordinateWorkbench.exe"
           }
           else {
-            gh release create v1.2.0 `
+            gh release create v1.3.0 `
               --repo "$env:GITHUB_REPOSITORY" `
               --target "$env:GITHUB_SHA" `
-              --title "Lovion Aansluiting Extractor v1.2.0" `
+              --title "Lovion Aansluiting Extractor v1.3.0" `
               --notes-file ".\release\RELEASE_NOTES.md" `
               ".\dist\LovionCoordinateWorkbench.exe"
           }
