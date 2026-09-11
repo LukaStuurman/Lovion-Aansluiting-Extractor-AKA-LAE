@@ -65,10 +65,10 @@ jobs:
 
           ## Stationsworkflow
           - `Aantal geladen` bepaalt hoeveel trafo's bij een station horen.
-          - Bij één resultaat wordt de enige rij niet aangeklikt; de workflow gaat direct naar `Open` en `VIEW`.
+          - Bij een resultaat wordt de enige rij niet aangeklikt; de workflow gaat direct naar `Open` en `VIEW`.
           - Bij meerdere resultaten wordt de juiste rij via OCR aan `Master Asset ID` in de rechterresultaatlijst gekoppeld.
           - Na trafo 1 keert Lovion terug naar de al geladen eerste resultatenlijst; trafo 2 en volgende worden daar direct geselecteerd zonder opnieuw zoeken of `Start query`.
-          - Alle trafo's van één station behouden hetzelfde stationnummer als `SourceFile`.
+          - Alle trafo's van een station behouden hetzelfde stationnummer als `SourceFile`.
 
           De volledige werkwijze en onderhoudsinstructies staan in `README.md`.
 
