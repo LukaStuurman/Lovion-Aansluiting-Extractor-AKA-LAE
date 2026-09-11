@@ -1,11 +1,11 @@
-name: Release v1.0.0
+name: Release v1.1.0
 
 on:
   push:
     branches:
       - main
     paths:
-      - .github/workflows/release-v1.0.0.yml
+      - .github/workflows/release-v1.1.0.yml
 
 permissions:
   contents: write
@@ -43,7 +43,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
 
           $notes = @'
-          # Lovion Aansluiting Extractor v1.0.0
+          # Lovion Aansluiting Extractor v1.1.0
 
           Eerste officiele release van de Lovion Aansluiting Extractor.
 
@@ -61,44 +61,45 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
-          # Houd de v1.0.0-tag gelijk aan de code waarmee de standalone EXE is gebouwd.
+          # Houd de v1.1.0-tag gelijk aan de code waarmee de standalone EXE is gebouwd.
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -f v1.0.0 "$env:GITHUB_SHA"
-          git push origin "refs/tags/v1.0.0" --force
+          git tag -f v1.1.0 "$env:GITHUB_SHA"
+          git push origin "refs/tags/v1.1.0" --force
 
-          gh release view v1.0.0 --repo "$env:GITHUB_REPOSITORY" *> $null
+          gh release view v1.1.0 --repo "$env:GITHUB_REPOSITORY" *> $null
           $releaseExists = ($LASTEXITCODE -eq 0)
 
           if ($releaseExists) {
             # Verwijder alle oude release-assets. Alleen de Workbench EXE blijft over.
-            $assetNames = @(gh release view v1.0.0 `
+            $assetNames = @(gh release view v1.1.0 `
               --repo "$env:GITHUB_REPOSITORY" `
               --json assets `
               --jq '.assets[].name')
 
             foreach ($assetName in $assetNames) {
               if (-not [string]::IsNullOrWhiteSpace($assetName)) {
-                gh release delete-asset v1.0.0 "$assetName" `
+                gh release delete-asset v1.1.0 "$assetName" `
                   --repo "$env:GITHUB_REPOSITORY" `
                   --yes
               }
             }
 
-            gh release edit v1.0.0 `
+            gh release edit v1.1.0 `
               --repo "$env:GITHUB_REPOSITORY" `
-              --title "Lovion Aansluiting Extractor v1.0.0" `
+              --title "Lovion Aansluiting Extractor v1.1.0" `
               --notes-file ".\release\RELEASE_NOTES.md"
 
-            gh release upload v1.0.0 `
+            gh release upload v1.1.0 `
               --repo "$env:GITHUB_REPOSITORY" `
               ".\dist\LovionCoordinateWorkbench.exe"
           }
           else {
-            gh release create v1.0.0 `
+            gh release create v1.1.0 `
               --repo "$env:GITHUB_REPOSITORY" `
               --target "$env:GITHUB_SHA" `
-              --title "Lovion Aansluiting Extractor v1.0.0" `
+              --title "Lovion Aansluiting Extractor v1.1.0" `
               --notes-file ".\release\RELEASE_NOTES.md" `
               ".\dist\LovionCoordinateWorkbench.exe"
           }
+
