@@ -77,7 +77,7 @@ jobs:
 
           De Workbench bevat het benodigde PowerShell-applicatiescript en de Lovion-macro-XML ingebed in de EXE. Er zijn geen losse scripts, CLI-versies of ZIP-bestanden nodig.
           '@
-          [System.IO.File]::WriteAllText((Join-Path $releaseDir 'RELEASE_NOTES.md'), $notes, [System.Text.Encoding]::ASCII)
+          [System.IO.File]::WriteAllText((Join-Path $releaseDir 'RELEASE_NOTES.md'), $notes, [System.Text.UTF8Encoding]::new($false))
 
       - name: Publish GitHub release
         shell: powershell
