@@ -65,8 +65,13 @@ jobs:
           git tag -f v1.1.0 "$env:GITHUB_SHA"
           git push origin "refs/tags/v1.1.0" --force
 
+          # Een ontbrekende release is normaal bij de eerste publicatie.
+          # Laat gh's exitcode wel uitlezen zonder dat PowerShell de stderr als exception behandelt.
+          $savedErrorActionPreference = $ErrorActionPreference
+          $ErrorActionPreference = 'Continue'
           gh release view v1.1.0 --repo "$env:GITHUB_REPOSITORY" *> $null
           $releaseExists = ($LASTEXITCODE -eq 0)
+          $ErrorActionPreference = $savedErrorActionPreference
 
           if ($releaseExists) {
             # Verwijder alle oude release-assets. Alleen de Workbench EXE blijft over.
