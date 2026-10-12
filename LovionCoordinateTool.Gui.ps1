@@ -4884,7 +4884,10 @@ function Get-LovionOcrSnapshot {
     param(
         [string]$ImagePath,
         [switch]$UseLovionWindow,
-        [switch]$FullWindow
+        [switch]$FullWindow,
+        [switch]$TableHeader,
+        [switch]$CountersOnly,
+        [ValidateRange(1, 3)][int]$OcrScale = 1
     )
 
     if (-not $script:WinRtAsTaskMethod -or -not $script:BitmapDecoderType -or -not $script:SoftwareBitmapType -or -not $script:OcrResultType -or -not $script:OcrEngineType) {
@@ -4923,10 +4926,27 @@ function Get-LovionOcrSnapshot {
             }
         }
 
-        $cropX = if ($FullWindow) { 0 } else { [int][Math]::Floor($width * 0.45) }
-        $cropHeight = if ($FullWindow) { $height } else { [Math]::Min(420, [int][Math]::Ceiling($height * 0.40)) }
+        $cropX = if ($CountersOnly) { [int][Math]::Floor($width * 0.70) } elseif ($FullWindow -or $TableHeader) { 0 } else { [int][Math]::Floor($width * 0.45) }
+        $cropHeight = if ($FullWindow -and -not $TableHeader) { $height } else { [Math]::Min(420, [int][Math]::Ceiling($height * 0.40)) }
         $cropRectangle = New-Object System.Drawing.Rectangle($cropX, 0, ($width - $cropX), $cropHeight)
         $counterBitmap = $sourceBitmap.Clone($cropRectangle, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+        $actualScale = 1.0
+        if ($OcrScale -gt 1) {
+            $actualScale = [Math]::Min([double]$OcrScale, [double]$script:OcrEngineType::MaxImageDimension / [Math]::Max($counterBitmap.Width, $counterBitmap.Height))
+            if ($actualScale -gt 1.0) {
+                $scaledBitmap = New-Object System.Drawing.Bitmap([int][Math]::Round($counterBitmap.Width * $actualScale), [int][Math]::Round($counterBitmap.Height * $actualScale))
+                $scaleGraphics = [System.Drawing.Graphics]::FromImage($scaledBitmap)
+                try {
+                    $scaleGraphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+                    $scaleGraphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+                    $scaleGraphics.DrawImage($counterBitmap, 0, 0, $scaledBitmap.Width, $scaledBitmap.Height)
+                }
+                finally { $scaleGraphics.Dispose() }
+                $counterBitmap.Dispose()
+                $counterBitmap = $scaledBitmap
+            }
+            else { $actualScale = 1.0 }
+        }
         $stream = New-Object System.IO.MemoryStream
         $counterBitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
         $stream.Position = 0
@@ -4974,12 +4994,12 @@ function Get-LovionOcrSnapshot {
                     }
                     $wordInfo = [pscustomobject]@{
                         Text = $wordText
-                        X = [double]$wordRect.X + $cropX
-                        Y = [double]$wordRect.Y
-                        Width = [double]$wordRect.Width
-                        Height = [double]$wordRect.Height
-                        CenterX = ([double]$wordRect.X + $cropX) + ([double]$wordRect.Width / 2.0)
-                        CenterY = [double]$wordRect.Y + ([double]$wordRect.Height / 2.0)
+                        X = ([double]$wordRect.X / $actualScale) + $cropX
+                        Y = [double]$wordRect.Y / $actualScale
+                        Width = [double]$wordRect.Width / $actualScale
+                        Height = [double]$wordRect.Height / $actualScale
+                        CenterX = (([double]$wordRect.X + ([double]$wordRect.Width / 2.0)) / $actualScale) + $cropX
+                        CenterY = ([double]$wordRect.Y + ([double]$wordRect.Height / 2.0)) / $actualScale
                     }
                     $lineWords.Add($wordInfo)
                     $wordItems.Add($wordInfo)
@@ -5018,7 +5038,8 @@ function Get-LovionScreenCounters {
     param(
         [string]$ImagePath,
         [switch]$UseLovionWindow,
-        [switch]$FullWindow
+        [switch]$FullWindow,
+        [switch]$TableHeader
     )
 
     $snapshot = Get-LovionOcrSnapshot @PSBoundParameters
@@ -5039,6 +5060,30 @@ function Get-LovionScreenCounters {
         }
         else {
             $values[$item.Name] = $null
+        }
+    }
+
+    # Small adjacent digits can be merged into a letter by Windows OCR (64
+    # was read as ae/æ in the live station test). Never map that letter to a
+    # guessed number: retry only the counter pane at a larger resolution.
+    if ($null -eq $values['loaded'] -or $null -eq $values['filtered'] -or $null -eq $values['selected']) {
+        $counterParameters = @{} + $PSBoundParameters
+        $counterParameters['CountersOnly'] = $true
+        $counterParameters['OcrScale'] = 2
+        $counterSnapshot = Get-LovionOcrSnapshot @counterParameters
+        if ($null -ne $counterSnapshot) {
+            foreach ($item in @(
+                @{ Name = 'loaded'; Pattern = 'Aantal\s+geladen' },
+                @{ Name = 'filtered'; Pattern = 'Gefilterd' },
+                @{ Name = 'selected'; Pattern = 'Geselecteerd' }
+            )) {
+                if ($null -ne $values[$item.Name]) { continue }
+                $match = [regex]::Match([string]$counterSnapshot.rawText, ('(?i){0}\s*[:;]?\s*([0-9IOil|]+)' -f $item.Pattern))
+                if ($match.Success) {
+                    $normalized = $match.Groups[1].Value.Replace('I', '1').Replace('i', '1').Replace('l', '1').Replace('|', '1').Replace('O', '0')
+                    $values[$item.Name] = [int]$normalized
+                }
+            }
         }
     }
 
@@ -6172,24 +6217,59 @@ function Invoke-LovionStationOcrClick {
     throw ("{0} ('{1}') werd niet binnen {2} seconden op het Lovion-scherm gevonden. Lovion lijkt nog te laden of het scherm wijkt af." -f $Description, $TargetText, $TimeoutSeconds)
 }
 
+function Get-LovionConnectionsTableEvidence {
+    param([AllowNull()][object]$Snapshot)
+
+    if ($null -eq $Snapshot) {
+        return [pscustomobject]@{ Ready = $false; Headers = @(); HasCounter = $false }
+    }
+    # OCR can insert spaces/punctuation in a compact table header. Normalize
+    # them before comparing; still require two connection-specific columns
+    # and a row counter so a station-query result cannot be imported by mistake.
+    $text = Normalize-LovionOcrToken ([string]$Snapshot.rawText)
+    $headers = @(
+        @('Gebruiksdoel', 'Aansluitmethode', 'Doorlaatwaarde') |
+            Where-Object { $text.Contains((Normalize-LovionOcrToken $_)) }
+    )
+    $hasCounter = $null -ne $Snapshot.loaded -or $null -ne $Snapshot.filtered
+    return [pscustomobject]@{
+        Ready = $headers.Count -ge 2 -and $hasCounter
+        Headers = $headers
+        HasCounter = $hasCounter
+    }
+}
+
 function Wait-LovionConnectionsTable {
     param([int]$TimeoutSeconds = 60)
 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $previousEvidence = $null
     do {
         if (Set-LovionWindowActive) {
-            $snapshot = Get-LovionScreenCounters -FullWindow
+            # Use the known Citrix/Lovion window rather than whichever transient
+            # window has focus. Read the table/status band separately: the map
+            # and property panel must not affect header/counter recognition.
+            $snapshot = Get-LovionScreenCounters -UseLovionWindow -TableHeader
             Assert-LovionAutomationNotCancelled
-            if ($null -ne $snapshot) {
-                $text = [string]$snapshot.rawText
-                $connectionHeaders = @(
-                    @('Gebruiksdoel', 'Aansluitmethode', 'Doorlaatwaarde') |
-                        Where-Object { $text -match [regex]::Escape($_) }
-                )
-                if ($connectionHeaders.Count -ge 2 -and ($null -ne $snapshot.loaded -or $null -ne $snapshot.filtered)) {
-                    return $snapshot
-                }
+            $evidence = Get-LovionConnectionsTableEvidence -Snapshot $snapshot
+            if (-not $evidence.Ready) {
+                # Older layouts may put their counters below the table.
+                $fullSnapshot = Get-LovionScreenCounters -UseLovionWindow -FullWindow
+                Assert-LovionAutomationNotCancelled
+                $fullEvidence = Get-LovionConnectionsTableEvidence -Snapshot $fullSnapshot
+                if ($fullEvidence.Ready) { return $fullSnapshot }
             }
+            $loaded = if ($null -ne $snapshot) { $snapshot.loaded } else { $null }
+            $filtered = if ($null -ne $snapshot) { $snapshot.filtered } else { $null }
+            $rawText = if ($null -ne $snapshot) {
+                (@([regex]::Matches([string]$snapshot.rawText, '(?i)(Aantal\s+geladen|Gefilterd|Geselecteerd)\s*[:;]?\s*[^\r\n]{0,80}') | ForEach-Object { $_.Value }) -join ' | ')
+            } else { '<geen OCR-opname>' }
+            $summary = 'kolommen={0}; geladen={1}; gefilterd={2}; OCR={3}' -f ($evidence.Headers -join ','), $loaded, $filtered, $rawText
+            if ($summary -ne $previousEvidence) {
+                Write-LovionBatchLog ('Herkenning aansluitingenlijst: ' + $summary)
+                $previousEvidence = $summary
+            }
+            if ($evidence.Ready) { return $snapshot }
         }
         Start-Sleep -Milliseconds 650
     } while ((Get-Date) -lt $deadline)

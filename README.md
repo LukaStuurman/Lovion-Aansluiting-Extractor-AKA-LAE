@@ -173,7 +173,7 @@ Per station werkt de workflow als volgt:
 4. Na `Start query` leest de workflow `Aantal geladen` en `Gefilterd`. De OCR moet eerst van het vorige scherm veranderen en daarna stabiel zijn. `Aantal geladen` is de leidende teller; `Gefilterd` wordt alleen gebruikt als Lovion de geladen-teller niet toont.
 5. De teller van de eerste stationquery bepaalt hoeveel trafos bij het station horen. Bij exact één resultaat wordt de rij niet aangeklikt: Lovion gaat direct door naar `Open` en `VIEW`. Bij meerdere resultaten wordt via OCR de kolomkop `Master Asset ID` in de rechter resultaatlijst gezocht en wordt daar per cyclus precies één rij geselecteerd. Daarna leest de workflow `Geselecteerd` met een volledige schermscan en wacht op stabiele tellerwaarden voordat `Open` en `VIEW` worden uitgevoerd. Daardoor wordt een geslaagde klik niet door een te kleine OCR-crop als mislukte selectie gezien en wordt de klik niet verward met de boomregel `LS Stroomtransformatorgroep` links. Na het sluiten van de resultaat-tabs keert Lovion terug naar de al geladen eerste resultatenlijst van hetzelfde station; voor trafo 2 en volgende wordt daar direct de volgende rij aangeklikt, zonder het station opnieuw te zoeken of `Start query` opnieuw uit te voeren. Zo blijven meerdere trafos aan hetzelfde station gekoppeld zonder dat selecties of netwerkresultaten door elkaar lopen.
 6. Voor de geselecteerde trafo wordt `VIEW` geopend. Daarna worden in de netwerkweergave de gevonden labels gebruikt voor `Netwerk`, `Schakelaars`, `Rekening houden met standen van schakelaars`, `Geen objecten` en `Aansluitingen`.
-7. Na de kaart-/netwerkselectie wordt `Exporteren` via OCR gevonden en wordt gewacht op de LS-aansluitingenlijst. De tabelteller wordt pas geaccepteerd als de kolomkoppen en de aantallen betrouwbaar zichtbaar zijn.
+7. Na de kaart-/netwerkselectie wordt `Exporteren` via OCR gevonden en wordt gewacht op de LS-aansluitingenlijst. De herkenning leest expliciet het Lovion-venster en eerst alleen de bovenste tabelstrook. Minimaal twee van de kolommen `Gebruiksdoel`, `Aansluitmethode` en `Doorlaatwaarde` plus een rijteller moeten herkenbaar zijn; OCR-spaties en leestekens binnen een kolomnaam worden genegeerd. Als een teller onleesbaar is, wordt alleen de rechter tellerstrook opnieuw gelezen met een tweemaal vergrote afbeelding. De tool raadt geen aantallen op basis van onleesbare tekens. Voor oudere layouts met een teller onderin is er een volledige schermscan als fallback. De herkenningsuitkomst wordt gelogd, zodat een zichtbare maar niet herkende lijst gericht kan worden onderzocht.
 
 Meerdere eerste zoekresultaten zijn geen oversla-conditie meer. Tijdens het testen was dat het geval voor `017.545`: Lovion gaf `geladen=2` en `gefilterd=2`. De workflow gebruikt dit aantal nu om trafo 1 en trafo 2 afzonderlijk te verwerken. Beide importbatches gebruiken exact `017.545` als `SourceFile`; in de samenvatting worden ze herkenbaar weergegeven als `017.545 trafo 1/2` en `017.545 trafo 2/2`.
 
@@ -228,6 +228,7 @@ Daarnaast zijn de PowerShell-smoketest, `git diff --check`, de standalone GUI-EX
 | `Build-LovionCoordinateToolGuiExe.ps1` | Bouwt de standalone `LovionCoordinateWorkbench.exe` en embedt de GUI-broncode. |
 | `Build-LovionCoordinateToolExe.ps1` | Bouwt de oudere CLI-EXE voor de niet-GUI workflow. |
 | `tests/Test-LovionStationWorkflow.ps1` | Lokale regressietests voor OCR-ankering, tellers en hergebruik van stationresultaten. |
+| `tests/Test-LovionConnectionsTable.ps1` | Regressietests voor de aansluitingenlijst, OCR-kolomnamen en de gerichte schermscan. |
 | `.github/workflows/release-v1.2.0.yml` | Bouwt en publiceert de standalone release-EXE wanneer de release-tag wordt gepusht; de workflownaam/tagversie wordt bij iedere release bijgewerkt. |
 | `LovionBatch.log` | Runtime-log naast de GUI of EXE; bevat OCR-resultaten, trafo-indexen, wachttijden en batchstatussen. |
 
@@ -265,6 +266,7 @@ Voer vanuit de repository uit:
 
 ```powershell
 PowerShell -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-LovionStationWorkflow.ps1
+PowerShell -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-LovionConnectionsTable.ps1
 PowerShell -NoProfile -Sta -ExecutionPolicy Bypass -File .\tests\Test-LovionMacro.ps1
 PowerShell -NoProfile -Sta -ExecutionPolicy Bypass -File .\tests\Test-GuiSurface.ps1
 PowerShell -NoProfile -Sta -ExecutionPolicy Bypass -File .\LovionCoordinateTool.Gui.ps1 -SmokeTest
