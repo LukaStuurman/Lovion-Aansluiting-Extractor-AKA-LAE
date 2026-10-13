@@ -55,8 +55,13 @@ Write-Output 'Transformer OCR anchor: PASS'
 #    to become visible instead of failing during Citrix rendering latency.
 $script:SelectedReads = 0
 $script:FullWindowReads = 0
+$script:TableHeaderReads = 0
 function Get-LovionScreenCounters {
-    param([switch]$FullWindow)
+    param([switch]$FullWindow, [switch]$UseLovionWindow, [switch]$TableHeader)
+    if ($TableHeader) {
+        $script:TableHeaderReads += 1
+        return [pscustomobject]@{ loaded=$null; filtered=$null; selected=$null; rawText='' }
+    }
     $script:SelectedReads += 1
     if ($FullWindow) { $script:FullWindowReads += 1 }
     $selected = if ($script:SelectedReads -eq 1) { 0 } else { 1 }
@@ -69,8 +74,16 @@ function Get-LovionScreenCounters {
 }
 $selected = Wait-LovionSelectedCount -TargetCount 1 -TimeoutSeconds 3
 Assert-Test ($selected -eq 1) 'selected counter reaches 1'
-Assert-Test ($script:SelectedReads -eq $script:FullWindowReads) 'selected counter always uses full-window OCR'
+Assert-Test ($script:SelectedReads -eq $script:FullWindowReads -and $script:TableHeaderReads -gt 0) 'bottom-right query counter is read using full-window fallback after checking the table band'
 Write-Output 'Selected counter wait: PASS'
+
+function Get-LovionScreenCounters {
+    param([switch]$FullWindow, [switch]$UseLovionWindow, [switch]$TableHeader)
+    Assert-Test ($UseLovionWindow -and $TableHeader -and -not $FullWindow) 'connection counter targets the named Lovion table band'
+    return [pscustomobject]@{ loaded=199; filtered=199; selected=99; rawText='Aantal geladen: 199 Gefilterd: 199 Geselecteerd: 99' }
+}
+Assert-Test ((Get-LovionSelectedCount) -eq 99) 'last batch of 99 rows is read from the upper counter band'
+Write-Output 'Upper connection counter (99 rows): PASS'
 
 # 3. The second transformer reuses the already loaded station result page.
 function Set-LovionBatchStatus { param([string]$Message) }

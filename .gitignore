@@ -35,6 +35,7 @@ cpp/build/
 output*/
 gui_test_output*/
 tmp_test*/
+.diagnostics/
 
 # Python and IDE caches
 __pycache__/

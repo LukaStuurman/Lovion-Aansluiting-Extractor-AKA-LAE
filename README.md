@@ -175,14 +175,16 @@ Per station werkt de workflow als volgt:
 6. Voor de geselecteerde trafo wordt `VIEW` geopend. Daarna worden in de netwerkweergave de gevonden labels gebruikt voor `Netwerk`, `Schakelaars`, `Rekening houden met standen van schakelaars`, `Geen objecten` en `Aansluitingen`.
 7. Na de kaart-/netwerkselectie wordt `Exporteren` via OCR gevonden en wordt gewacht op de LS-aansluitingenlijst. De herkenning leest expliciet het Lovion-venster en eerst alleen de bovenste tabelstrook. Minimaal twee van de kolommen `Gebruiksdoel`, `Aansluitmethode` en `Doorlaatwaarde` plus een rijteller moeten herkenbaar zijn; OCR-spaties en leestekens binnen een kolomnaam worden genegeerd. Als een teller onleesbaar is, wordt alleen de rechter tellerstrook opnieuw gelezen met een tweemaal vergrote afbeelding. De tool raadt geen aantallen op basis van onleesbare tekens. Voor oudere layouts met een teller onderin is er een volledige schermscan als fallback. De herkenningsuitkomst wordt gelogd, zodat een zichtbare maar niet herkende lijst gericht kan worden onderzocht.
 
-Meerdere eerste zoekresultaten zijn geen oversla-conditie meer. Tijdens het testen was dat het geval voor `017.545`: Lovion gaf `geladen=2` en `gefilterd=2`. De workflow gebruikt dit aantal nu om trafo 1 en trafo 2 afzonderlijk te verwerken. Beide importbatches gebruiken exact `017.545` als `SourceFile`; in de samenvatting worden ze herkenbaar weergegeven als `017.545 trafo 1/2` en `017.545 trafo 2/2`.
+Voordat een trafo wordt geopend, wordt per rij eerst de kolom `Status` gelezen uit een vergrote scan van de rechter resultatentabel. Een trafo met status `gepland` wordt niet geopend of geimporteerd, maar genoteerd in een aparte sectie onderaan de eindmelding. De overige trafo's van hetzelfde station gaan gewoon verder. De rijvolgorde mag veranderen: de tool leest de status opnieuw en neemt niet aan dat een bepaalde rij altijd de geplande trafo is.
+
+Meerdere eerste zoekresultaten zijn geen oversla-conditie meer. Tijdens het testen was dat het geval voor `017.545`: Lovion gaf `geladen=2` en `gefilterd=2`. Twee trafos met `in bedrijf` krijgen allebei een importcyclus. Beide importbatches gebruiken exact dezelfde stationcode als `SourceFile`; in de samenvatting worden ze herkenbaar weergegeven als trafo `1/2` en `2/2`.
 
 ### Selecteren en kopiëren van aansluitingen
 
 Voor een aansluitingenlijst met meer dan 100 rijen:
 
 1. De grid krijgt focus en wordt met `Ctrl+Home` teruggezet naar de eerste rij. Dit voorkomt dat een eerder horizontaal of verticaal gescrolde grid maar de zichtbare 14 rijen selecteert.
-2. De eerste rij wordt enkel geselecteerd.
+2. De lijst wordt altijd eerst met `Ctrl+Home` en extra muiswielstappen helemaal naar boven teruggezet, ook wanneer Lovion de vorige scrollpositie heeft onthouden. Daarna wordt de eerste rij enkel geselecteerd en wordt `Geselecteerd=1` gecontroleerd.
 3. Voor iedere volgende rij wordt dezelfde fysieke `Shift` ingedrukt gehouden. Terwijl Shift continu ingedrukt blijft, wordt `↓` één voor één verstuurd. Er zit een pauze tussen de toetsen omdat Citrix toetsen vertraagd kan verwerken.
 4. De teller `Geselecteerd` wordt via OCR gelezen. De workflow wacht op twee stabiele metingen voordat de selectie verdergaat.
 5. De selectie wordt via `Exporteren > Kopieer naar klembord` gekopieerd. De tekstexport wordt meerdere keren gecontroleerd totdat het exacte verwachte aantal herkenbare rijen aanwezig is.
@@ -229,6 +231,7 @@ Daarnaast zijn de PowerShell-smoketest, `git diff --check`, de standalone GUI-EX
 | `Build-LovionCoordinateToolExe.ps1` | Bouwt de oudere CLI-EXE voor de niet-GUI workflow. |
 | `tests/Test-LovionStationWorkflow.ps1` | Lokale regressietests voor OCR-ankering, tellers en hergebruik van stationresultaten. |
 | `tests/Test-LovionConnectionsTable.ps1` | Regressietests voor de aansluitingenlijst, OCR-kolomnamen en de gerichte schermscan. |
+| `tests/Test-PlannedTransformers.ps1` | Regressietests voor statussen per trafo-rij, geplande trafo's in de eindmelding en twee werkende trafo's op hetzelfde station. |
 | `.github/workflows/release-v1.2.0.yml` | Bouwt en publiceert de standalone release-EXE wanneer de release-tag wordt gepusht; de workflownaam/tagversie wordt bij iedere release bijgewerkt. |
 | `LovionBatch.log` | Runtime-log naast de GUI of EXE; bevat OCR-resultaten, trafo-indexen, wachttijden en batchstatussen. |
 
@@ -267,6 +270,7 @@ Voer vanuit de repository uit:
 ```powershell
 PowerShell -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-LovionStationWorkflow.ps1
 PowerShell -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-LovionConnectionsTable.ps1
+PowerShell -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-PlannedTransformers.ps1
 PowerShell -NoProfile -Sta -ExecutionPolicy Bypass -File .\tests\Test-LovionMacro.ps1
 PowerShell -NoProfile -Sta -ExecutionPolicy Bypass -File .\tests\Test-GuiSurface.ps1
 PowerShell -NoProfile -Sta -ExecutionPolicy Bypass -File .\LovionCoordinateTool.Gui.ps1 -SmokeTest
@@ -277,6 +281,45 @@ git diff --check
 ```
 
 Voor een handmatige Citrix-test moet Lovion volledig zichtbaar op het meest linkse scherm staan. Test minimaal `017.584` (één resultaat: geen rijselectie) en `017.545` (twee resultaten: trafo 1 openen, terug naar dezelfde eerste lijst, trafo 2 direct selecteren). Beweeg tijdens deze test de muis niet en controleer `LovionBatch.log` na afloop.
+
+Een live stationscontrole kan dezelfde stationsfunctie starten met een lokaal bestand (een stationnummer per regel) en zonder tussentijdse startdialogen:
+
+```powershell
+PowerShell -NoProfile -Sta -ExecutionPolicy Bypass -File .\LovionCoordinateTool.Gui.ps1 `
+  -StationListPath ".\stations.txt" `
+  -StationTestReportPath ".\output_station_tests\controle.json"
+```
+
+Het JSON-overzicht wordt na iedere trafo bijgewerkt met de status, het verwachte aantal aansluitingen en het werkelijk geimporteerde aantal. De naastgelegen `controle.csv` bewaart de geimporteerde rijen. De Workbench blijft na de controle open. Bij een fout stopt de run, bewaart hij het gedeeltelijke resultaat en vermeldt het JSON-overzicht de fout; een geplande trafo is een genoteerde oversla-situatie, geen fout.
+
+Hervat met dezelfde volledige stationslijst en een **nieuw** rapportpad. `-StationTestResumePaths` accepteert een bestaand JSON-rapport of meerdere rapportpaden gescheiden door een puntkomma. De naastgelegen CSV-bestanden moeten aanwezig zijn wanneer er aansluitingen in staan. Alleen volledig afgeronde stations met passende tellers, stationcodes en unieke aansluitings-ID's worden teruggezet in de Workbench; onafgeronde stations en losse laatste batches worden opnieuw verwerkt. Al afgeronde stations worden niet dubbel geimporteerd. Ook hun geplande trafo-notities blijven onderaan de eindmelding staan.
+
+```powershell
+PowerShell -NoProfile -Sta -ExecutionPolicy Bypass -File .\LovionCoordinateTool.Gui.ps1 `
+  -StationListPath ".\stations.txt" `
+  -StationTestReportPath ".\output_station_tests\hervat.json" `
+  -StationTestResumePaths ".\output_station_tests\controle.json"
+```
+
+De OCR-engine wordt tijdens de run hergebruikt en de afbeeldingsbronnen worden na iedere scan vrijgegeven, zodat lange stationslijsten niet steeds meer native afbeeldingsgeheugen vasthouden. `tests/Test-StationResume.ps1` controleert gegevensbehoud en het uitsluiten van onvolledige imports. `tests/Test-OcrResourceLifetime.ps1 -ImagePath <lokale-schermafbeelding>` controleert het geheugen bij 80 herhaalde OCR-scans.
+
+Een afgeronde lijst kan zonder nieuwe import rechtstreeks in de Workbench worden geopend:
+
+```powershell
+PowerShell -NoProfile -Sta -ExecutionPolicy Bypass -File .\LovionCoordinateTool.Gui.ps1 `
+  -OpenStationResultPath ".\output_station_tests\hervat.json"
+```
+
+De tabel behoudt alle rijen. De toegankelijkheidsprovider beperkt alleen de opsomming van kinderen tot de zichtbare rijen, kolomkoppen en schuifbalken. Daardoor laat een achtergrondcontrole van het venster niet meer alle niet-zichtbare cellen tegelijk aanmaken. Scrollen, toetsenbordfocus en export blijven beschikbaar. `tests/Test-LargeGridAccessibility.ps1` controleert dit met 2.641 synthetische rijen.
+
+Controleer de volledige run en de bewaarde CSV onafhankelijk met:
+
+```powershell
+PowerShell -NoProfile -ExecutionPolicy Bypass -File .\tests\Verify-StationTestReport.ps1 `
+  -ReportPath ".\output_station_tests\controle.json" -StationListPath ".\stations.txt"
+```
+
+Deze controle vereist dat alle gevraagde stations en trafo-cycli zijn afgerond, vergelijkt de aantallen met de CSV en controleert de stationcode en unieke aansluitings-ID's binnen iedere trafo-import. Met `-AllowPartial` kan de voortgang worden gecontroleerd, maar een gedeeltelijke run wordt nooit als voltooid gemeld.
 
 ### Releaseproces
 

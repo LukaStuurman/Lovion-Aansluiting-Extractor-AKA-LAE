@@ -1,7 +1,11 @@
 [CmdletBinding()]
 param(
     [switch]$SmokeTest,
-    [switch]$MacroSmokeTest
+    [switch]$MacroSmokeTest,
+    [string]$StationListPath,
+    [string]$StationTestReportPath,
+    [string]$StationTestResumePaths,
+    [string]$OpenStationResultPath
 )
 
 Set-StrictMode -Version Latest
@@ -11,6 +15,61 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Net.Http
 Add-Type -AssemblyName System.Runtime.WindowsRuntime
+
+if (-not ('LovionDataGridView' -as [type])) {
+    Add-Type -ReferencedAssemblies 'System.Windows.Forms.dll','System.Drawing.dll','Accessibility.dll' @'
+using System;
+using System.Collections.Generic;
+using System.Windows.Forms;
+
+public class LovionDataGridView : DataGridView
+{
+    public int AccessibleDisplayedChildCount { get { return AccessibilityObject.GetChildCount(); } }
+    protected override AccessibleObject CreateAccessibilityInstance()
+    {
+        return new DisplayedRowsAccessibleObject(this);
+    }
+
+    // Legacy accessibility clients otherwise unshare every off-screen row and
+    // instantiate every cell. Keep the standard provider, focus, selection,
+    // scrolling and full data model; virtualize only its child enumeration.
+    private class DisplayedRowsAccessibleObject : DataGridViewAccessibleObject
+    {
+        private readonly LovionDataGridView grid;
+        public DisplayedRowsAccessibleObject(LovionDataGridView owner) : base(owner) { grid = owner; }
+
+        private List<int> DisplayedChildren()
+        {
+            var children = new List<int>();
+            int fullCount = base.GetChildCount();
+            if (fullCount <= 0) return children;
+            int headerCount = grid.ColumnHeadersVisible ? 1 : 0;
+            if (headerCount > 0) children.Add(0);
+            int visibleRank = 0;
+            int row = grid.Rows.GetFirstRow(DataGridViewElementStates.Visible);
+            while (row >= 0)
+            {
+                if ((grid.Rows.GetRowState(row) & DataGridViewElementStates.Displayed) != 0)
+                    children.Add(headerCount + visibleRank);
+                visibleRank++;
+                row = grid.Rows.GetNextRow(row, DataGridViewElementStates.Visible);
+            }
+            // Preserve the standard scrollbar accessibility children too.
+            for (int index = headerCount + visibleRank; index < fullCount; index++)
+                children.Add(index);
+            return children;
+        }
+
+        public override int GetChildCount() { return DisplayedChildren().Count; }
+        public override AccessibleObject GetChild(int index)
+        {
+            var children = DisplayedChildren();
+            return index >= 0 && index < children.Count ? base.GetChild(children[index]) : null;
+        }
+    }
+}
+'@
+}
 
 if (-not ('LovionBatchInput' -as [type])) {
     Add-Type -ReferencedAssemblies 'System.Drawing.dll' @'
@@ -1204,6 +1263,9 @@ $script:WfsStreetFurnitureSnapDistanceMeters = 100
 $script:WfsBufferMeters = 100
 $script:StreetFurnitureTermsConfigPath = Join-Path -Path $script:ScriptDirectory -ChildPath 'street_furniture_terms.json'
 $script:LovionBatchLogPath = Join-Path -Path $script:ScriptDirectory -ChildPath 'LovionBatch.log'
+$script:StationTestReportPath = $StationTestReportPath
+$script:StationTestRecords = New-Object System.Collections.Generic.List[object]
+$script:StationTestRequested = @()
 $script:WinRtAsTaskMethod = [System.WindowsRuntimeSystemExtensions].GetMethods() |
     Where-Object {
         $_.Name -eq 'AsTask' -and
@@ -1216,6 +1278,8 @@ $script:BitmapDecoderType = [type]::GetType('Windows.Graphics.Imaging.BitmapDeco
 $script:SoftwareBitmapType = [type]::GetType('Windows.Graphics.Imaging.SoftwareBitmap, Windows, ContentType=WindowsRuntime')
 $script:OcrResultType = [type]::GetType('Windows.Media.Ocr.OcrResult, Windows, ContentType=WindowsRuntime')
 $script:OcrEngineType = [type]::GetType('Windows.Media.Ocr.OcrEngine, Windows, ContentType=WindowsRuntime')
+$script:LovionOcrEngine = $null
+$script:OcrSnapshotCount = 0
 $script:DefaultStreetFurnitureTerms = @(
     'riool',
     'fontein',
@@ -4887,6 +4951,7 @@ function Get-LovionOcrSnapshot {
         [switch]$FullWindow,
         [switch]$TableHeader,
         [switch]$CountersOnly,
+        [switch]$TransformerTable,
         [ValidateRange(1, 3)][int]$OcrScale = 1
     )
 
@@ -4897,6 +4962,8 @@ function Get-LovionOcrSnapshot {
     $sourceBitmap = $null
     $counterBitmap = $null
     $stream = $null
+    $softwareBitmap = $null
+    $randomAccessStream = $null
     try {
         if (-not [string]::IsNullOrWhiteSpace($ImagePath)) {
             $resolvedImagePath = (Resolve-Path -LiteralPath $ImagePath).Path
@@ -4926,9 +4993,10 @@ function Get-LovionOcrSnapshot {
             }
         }
 
-        $cropX = if ($CountersOnly) { [int][Math]::Floor($width * 0.70) } elseif ($FullWindow -or $TableHeader) { 0 } else { [int][Math]::Floor($width * 0.45) }
-        $cropHeight = if ($FullWindow -and -not $TableHeader) { $height } else { [Math]::Min(420, [int][Math]::Ceiling($height * 0.40)) }
-        $cropRectangle = New-Object System.Drawing.Rectangle($cropX, 0, ($width - $cropX), $cropHeight)
+        $cropX = if ($TransformerTable) { [int][Math]::Floor($width * 0.45) } elseif ($CountersOnly) { [int][Math]::Floor($width * 0.70) } elseif ($FullWindow -or $TableHeader) { 0 } else { [int][Math]::Floor($width * 0.45) }
+        $cropY = if ($TransformerTable) { [int][Math]::Floor($height * 0.55) } else { 0 }
+        $cropHeight = if ($TransformerTable) { $height - $cropY } elseif ($FullWindow -and -not $TableHeader) { $height } else { [Math]::Min(420, [int][Math]::Ceiling($height * 0.40)) }
+        $cropRectangle = New-Object System.Drawing.Rectangle($cropX, $cropY, ($width - $cropX), $cropHeight)
         $counterBitmap = $sourceBitmap.Clone($cropRectangle, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
         $actualScale = 1.0
         if ($OcrScale -gt 1) {
@@ -4962,7 +5030,8 @@ function Get-LovionOcrSnapshot {
         $bitmapTask.Wait()
         $softwareBitmap = $bitmapTask.Result
 
-        $ocrEngine = $script:OcrEngineType::TryCreateFromUserProfileLanguages()
+        $ocrEngine = $script:LovionOcrEngine
+        if (-not $ocrEngine) { $ocrEngine = $script:OcrEngineType::TryCreateFromUserProfileLanguages() }
         if (-not $ocrEngine) {
             $language = $script:OcrEngineType::AvailableRecognizerLanguages |
                 Where-Object { $_.LanguageTag -in @('nl-NL', 'en-US') } |
@@ -4974,6 +5043,7 @@ function Get-LovionOcrSnapshot {
         if (-not $ocrEngine) {
             return $null
         }
+        $script:LovionOcrEngine = $ocrEngine
 
         $ocrOperation = $ocrEngine.RecognizeAsync($softwareBitmap)
         $ocrTask = $script:WinRtAsTaskMethod.MakeGenericMethod($script:OcrResultType).Invoke($null, @($ocrOperation))
@@ -4995,11 +5065,11 @@ function Get-LovionOcrSnapshot {
                     $wordInfo = [pscustomobject]@{
                         Text = $wordText
                         X = ([double]$wordRect.X / $actualScale) + $cropX
-                        Y = [double]$wordRect.Y / $actualScale
+                        Y = ([double]$wordRect.Y / $actualScale) + $cropY
                         Width = [double]$wordRect.Width / $actualScale
                         Height = [double]$wordRect.Height / $actualScale
                         CenterX = (([double]$wordRect.X + ([double]$wordRect.Width / 2.0)) / $actualScale) + $cropX
-                        CenterY = ([double]$wordRect.Y + ([double]$wordRect.Height / 2.0)) / $actualScale
+                        CenterY = (([double]$wordRect.Y + ([double]$wordRect.Height / 2.0)) / $actualScale) + $cropY
                     }
                     $lineWords.Add($wordInfo)
                     $wordItems.Add($wordInfo)
@@ -5018,6 +5088,7 @@ function Get-LovionOcrSnapshot {
             Width = $width
             Height = $height
             CropX = $cropX
+            CropY = $cropY
             CropHeight = $cropHeight
             rawText = $ocrText
             Lines = @($lineItems.ToArray())
@@ -5025,12 +5096,19 @@ function Get-LovionOcrSnapshot {
         }
     }
     catch {
+        Write-LovionBatchLog ('OCR-fout: ' + $_.Exception.Message)
         return $null
     }
     finally {
+        if ($softwareBitmap -is [System.IDisposable]) { ([System.IDisposable]$softwareBitmap).Dispose() }
+        if ($randomAccessStream -is [System.IDisposable]) { ([System.IDisposable]$randomAccessStream).Dispose() }
         if ($stream) { $stream.Dispose() }
         if ($counterBitmap) { $counterBitmap.Dispose() }
         if ($sourceBitmap) { $sourceBitmap.Dispose() }
+        # WIC decoders and OCR results also wrap native objects. Their native
+        # allocations do not reliably trigger managed GC during a long run.
+        $script:OcrSnapshotCount += 1
+        if (($script:OcrSnapshotCount % 25) -eq 0) { [System.GC]::Collect() }
     }
 }
 
@@ -5559,15 +5637,65 @@ function Wait-LovionTransformerResultRowPoint {
     return $null
 }
 
+function Get-LovionTransformerMetadataFromSnapshot {
+    param([object]$Snapshot, [int]$TransformerIndex)
+
+    if ($null -eq $Snapshot) { return $null }
+    $assetHeader = Find-LovionOcrTarget -Snapshot $Snapshot -TargetText 'Master Asset ID' -MinX ([int]($Snapshot.Width * 0.45)) -MinY ([int]($Snapshot.Height * 0.45))
+    if ($null -eq $assetHeader) { return $null }
+    $statusHeader = Find-LovionOcrTarget -Snapshot $Snapshot -TargetText 'Status' -MinX ([int]$assetHeader.X) -MinY ([int]($assetHeader.Y - 8)) -MaxY ([int]($assetHeader.Y + $assetHeader.Height + 8))
+    if ($null -eq $statusHeader) { return $null }
+    $rowY = [double]$assetHeader.Y + [double]$assetHeader.Height + 20 + ($TransformerIndex * 22)
+    $nextHeader = @($Snapshot.Words | Where-Object {
+        [Math]::Abs($_.CenterY - $statusHeader.CenterY) -le 8 -and $_.X -gt ($statusHeader.X + $statusHeader.Width + 4)
+    } | Sort-Object X | Select-Object -First 1)
+    $statusRight = if ($nextHeader.Count -gt 0) { [double]$nextHeader[0].X - 2 } else { [double]$statusHeader.X + 100 }
+    $rowWords = @($Snapshot.Words | Where-Object {
+        $_.CenterX -ge ($Snapshot.Width * 0.45) -and [Math]::Abs($_.CenterY - $rowY) -le 9
+    } | Sort-Object X)
+    $statusWords = @($rowWords | Where-Object { $_.CenterX -ge ($statusHeader.X - 8) -and $_.CenterX -lt $statusRight })
+    $statusText = ($statusWords | ForEach-Object { $_.Text }) -join ' '
+    $normalizedStatus = Normalize-LovionOcrToken $statusText
+    $status = if ($normalizedStatus -eq 'GEPLAND') { 'gepland' } elseif ($normalizedStatus -eq 'INBEDRIJF') { 'in bedrijf' } else { $statusText.Trim() }
+    if ([string]::IsNullOrWhiteSpace($status)) { return $null }
+    $assetIds = @($rowWords | Where-Object { $_.Text -match '^\d{10,20}$' } | Select-Object -First 1)
+    return [pscustomobject]@{
+        Status = $status
+        IsPlanned = $normalizedStatus -eq 'GEPLAND'
+        AssetId = if ($assetIds.Count -gt 0) { [string]$assetIds[0].Text } else { '' }
+        X = [int][Math]::Round($assetHeader.CenterX)
+        Y = [int][Math]::Round($rowY)
+        TransformerIndex = $TransformerIndex
+    }
+}
+
+function Wait-LovionTransformerMetadata {
+    param([int]$TransformerIndex, [int]$TimeoutSeconds = 15)
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        Assert-LovionAutomationNotCancelled
+        if (Set-LovionWindowActive) {
+            $snapshot = Get-LovionOcrSnapshot -UseLovionWindow -TransformerTable -OcrScale 3
+            $metadata = Get-LovionTransformerMetadataFromSnapshot -Snapshot $snapshot -TransformerIndex $TransformerIndex
+            if ($null -ne $metadata) { return $metadata }
+        }
+        Start-Sleep -Milliseconds 450
+    } while ((Get-Date) -lt $deadline)
+    return $null
+}
+
 function Get-LovionSelectedCount {
     param([switch]$FastMouseMode)
 
     Assert-LovionAutomationNotCancelled
-    # Geselecteerd is shown in Lovion's bottom-right status bar. The default
-    # counter crop only covers the upper-right pane, so use the full window
-    # after a transformer row click; otherwise a real selection can look like
-    # no selection and the workflow waits until it times out.
-    $counters = Get-LovionScreenCounters -FullWindow
+    # Connection selections use the upper table counter. Transformer query
+    # selections use the bottom-right status bar, requiring a full-window
+    # fallback when the focused table-header scan has no selected counter.
+    $counters = Get-LovionScreenCounters -UseLovionWindow -TableHeader
+    if ($null -eq $counters -or $null -eq $counters.selected) {
+        $counters = Get-LovionScreenCounters -UseLovionWindow -FullWindow
+    }
     Assert-LovionAutomationNotCancelled
     if ($null -eq $counters -or $null -eq $counters.selected) {
         return $null
@@ -5854,12 +5982,20 @@ function Invoke-LovionBatchImportCore {
     Start-Sleep -Milliseconds 250
     Write-LovionBatchLog 'Eerste Lovion-tabelrij gefocust.'
 
-    # The result grid can reopen at the previous scroll position.  Give the
-    # grid focus first, then reset it with Ctrl+Home and click the real first
-    # row again before starting a Shift+Down selection.
+    # Citrix can leave the viewport at a previous station's last selection.
+    # Reset both the active row and the viewport before selecting any batch.
     [LovionBatchInput]::ReleaseModifiers()
     [LovionBatchInput]::Chord(0x11, 0x24)
     Start-Sleep -Milliseconds 900
+    $beforeResetCounters = Get-LovionScreenCounters -UseLovionWindow -TableHeader
+    $loadedForReset = if ($null -ne $beforeResetCounters -and $null -ne $beforeResetCounters.loaded) { [int]$beforeResetCounters.loaded } else { 300 }
+    $scrollSteps = [Math]::Max(20, [int][Math]::Ceiling($loadedForReset / 3.0) + 8)
+    if (-not (Invoke-LovionGridScroll -WheelSteps (-$scrollSteps) -FastMouseMode:$FastMouseMode)) {
+        throw 'De aansluitingenlijst kon niet helemaal naar boven worden gescrold.'
+    }
+    [LovionBatchInput]::ReleaseModifiers()
+    [LovionBatchInput]::Chord(0x11, 0x24)
+    Start-Sleep -Milliseconds 700
     if ($FastMouseMode) {
         $focusedFirstRow = [LovionBatchInput]::FocusLovionGridFirstRowFast()
     }
@@ -5871,7 +6007,9 @@ function Invoke-LovionBatchImportCore {
         throw 'De eerste Lovion-tabelrij kon na Ctrl+Home niet opnieuw worden gefocust.'
     }
     Start-Sleep -Milliseconds 300
-    Write-LovionBatchLog 'Lovion-resultaatgrid naar de eerste rij teruggezet.'
+    $firstSelectedCount = Wait-LovionSelectedCount -TargetCount 1 -TimeoutSeconds 12 -FastMouseMode:$FastMouseMode
+    if ($firstSelectedCount -ne 1) { throw 'Na het naar boven scrollen is niet precies de eerste aansluiting geselecteerd.' }
+    Write-LovionBatchLog ("Lovion-resultaatgrid helemaal naar boven gescrold ({0} wielstappen) en eerste rij geselecteerd." -f $scrollSteps)
 
     $counters = Get-LovionScreenCounters
     Assert-LovionAutomationNotCancelled
@@ -6481,6 +6619,25 @@ function Open-LovionConnectionsForStation {
         throw ("Station {0} heeft meer dan 14 eerste zoekresultaten; trafo {1} kan niet betrouwbaar in beeld worden geselecteerd." -f $StationNumber, ($TransformerIndex + 1))
     }
 
+    $transformerMetadata = Wait-LovionTransformerMetadata -TransformerIndex $TransformerIndex
+    if ($null -eq $transformerMetadata) {
+        throw ("De status van trafo {0} voor station {1} kon niet uit de resultatenlijst worden gelezen." -f ($TransformerIndex + 1), $StationNumber)
+    }
+    Write-LovionBatchLog ("Trafo-status station {0}, trafo {1}/{2}: {3}; asset={4}." -f $StationNumber, ($TransformerIndex + 1), $initialResultCount, $transformerMetadata.Status, $transformerMetadata.AssetId)
+    if ($transformerMetadata.IsPlanned) {
+        return [pscustomobject]@{
+            Selected = $false
+            ManualRequired = $false
+            Skipped = $true
+            SkipReason = 'gepland'
+            ViewOpened = $false
+            InitialResultCount = $initialResultCount
+            TransformerIndex = $TransformerIndex
+            TransformerStatus = $transformerMetadata.Status
+            TransformerAssetId = $transformerMetadata.AssetId
+        }
+    }
+
     if ($initialResultCount -eq 1) {
         # With exactly one loaded result Lovion can open the active/default row
         # directly. Clicking the row is both unnecessary and unreliable in the
@@ -6539,7 +6696,104 @@ function Open-LovionConnectionsForStation {
         Skipped = $false
         InitialResultCount = $initialResultCount
         TransformerIndex = $TransformerIndex
+        TransformerStatus = $transformerMetadata.Status
+        TransformerAssetId = $transformerMetadata.AssetId
+        ConnectionCount = if ($null -ne $connections.loaded) { [int]$connections.loaded } else { [int]$connections.filtered }
     }
+}
+
+function Write-LovionStationTestCheckpoint {
+    param([string]$State, [string]$ErrorMessage = '')
+    if ([string]::IsNullOrWhiteSpace($script:StationTestReportPath)) { return }
+    $path = [System.IO.Path]::GetFullPath($script:StationTestReportPath)
+    [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($path))
+    $report = [ordered]@{
+        State = $State
+        UpdatedAt = (Get-Date).ToString('o')
+        RequestedStations = $script:StationTestRequested
+        Records = @($script:StationTestRecords.ToArray())
+        ImportedRows = $script:Table.Rows.Count
+        Error = $ErrorMessage
+    }
+    [System.IO.File]::WriteAllText($path, ($report | ConvertTo-Json -Depth 8), (New-Object System.Text.UTF8Encoding($false)))
+    if ($script:Table.Rows.Count -gt 0) {
+        # Checkpoints preserve the already prepared grid verbatim; rebuilding
+        # every coordinate/address for every checkpoint is slow and unnecessary.
+        $savedRows = foreach ($dataRow in $script:Table.Rows) {
+            $saved = [ordered]@{}
+            foreach ($column in $script:Table.Columns) {
+                $value = $dataRow[$column.ColumnName]
+                $saved[$column.ColumnName] = if ($value -eq [DBNull]::Value) { $null } else { [string]$value }
+            }
+            [pscustomobject]$saved
+        }
+        $savedRows | Export-Csv -LiteralPath ([System.IO.Path]::ChangeExtension($path, '.csv')) -NoTypeInformation -Encoding UTF8
+    }
+}
+
+function Restore-LovionStationTestReports {
+    param([string[]]$Paths)
+    $restoredStations = New-Object System.Collections.Generic.List[string]
+    $restoredRows = New-Object System.Collections.Generic.List[object]
+    $restoredRecords = New-Object System.Collections.Generic.List[object]
+    foreach ($resumePath in $Paths) {
+        $path = (Resolve-Path -LiteralPath $resumePath).Path
+        if (-not [string]::IsNullOrWhiteSpace($script:StationTestReportPath) -and $path -eq [System.IO.Path]::GetFullPath($script:StationTestReportPath)) { throw 'Gebruik een nieuw rapportpad bij het hervatten.' }
+        $report = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+        $csvPath = [System.IO.Path]::ChangeExtension($path, '.csv')
+        $rows = if (Test-Path -LiteralPath $csvPath) { @(Import-Csv -LiteralPath $csvPath) } else { @() }
+        $records = @($report.Records)
+        $complete = @{}
+        foreach ($group in @($records | Group-Object Station)) {
+            $count = [int]($group.Group | Measure-Object TransformerCount -Maximum).Maximum
+            $indexes = @($group.Group | Select-Object -ExpandProperty Transformer -Unique)
+            if ($count -gt 0 -and $group.Count -eq $count -and $indexes.Count -eq $count -and @((1..$count) | Where-Object { $_ -notin $indexes }).Count -eq 0) {
+                if ($group.Name -notin $script:StationTestRequested -or $restoredStations.Contains($group.Name)) { throw ('Onverwacht of dubbel station in hervatrapport: ' + $group.Name) }
+                $complete[$group.Name] = $true
+                $restoredStations.Add($group.Name)
+            }
+        }
+        $offset = 0
+        foreach ($record in $records) {
+            $count = [int]$record.ImportedCount
+            if ($count -lt 0 -or $count -ne [int]$record.ExpectedCount) { throw 'Ongeverifieerde teller in hervatrapport.' }
+            $batch = @($rows | Select-Object -Skip $offset -First $count)
+            $offset += $count
+            if ($batch.Count -ne $count -or @($batch | Where-Object { $_.SourceFile -ne $record.Station }).Count -gt 0) { throw 'De opgeslagen aansluitingen passen niet bij het hervatrapport.' }
+            if ($record.Outcome -eq 'planned') {
+                if ($record.Status -ne 'gepland' -or $count -ne 0) { throw 'Een geplande trafo bevat ongeldige aansluitingen.' }
+            } elseif ($record.Outcome -eq 'imported' -and $record.Status -eq 'in bedrijf') {
+                $ids = @($batch | ForEach-Object { $_.'Master Asset ID' })
+                if (@($ids | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -gt 0 -or @($ids | Select-Object -Unique).Count -ne $count) { throw 'Ontbrekende of dubbele aansluitingen in hervatrapport.' }
+            } else { throw 'Ongeverifieerde trafostatus in hervatrapport.' }
+            if ($complete.ContainsKey([string]$record.Station)) {
+                $restoredRecords.Add($record)
+                foreach ($row in $batch) { $restoredRows.Add($row) }
+            }
+        }
+        if ($rows.Count -ne [int]$report.ImportedRows -or $offset -gt $rows.Count) { throw 'Rijtotaal in hervatrapport is ongeldig.' }
+        # Failed runs may contain an unfinished tail batch. Only rows covered
+        # by verified records for fully completed stations are restored.
+        Write-LovionBatchLog ('Hervatten: {0} onvolledige rijen buiten de lijst gehouden.' -f ($rows.Count - $offset))
+    }
+    Add-RowsToTable -Rows $restoredRows.ToArray()
+    foreach ($record in $restoredRecords) { $script:StationTestRecords.Add($record) }
+    Write-LovionBatchLog ('Hervatten: {0} complete stations en {1} aansluitingen behouden.' -f $restoredStations.Count, $restoredRows.Count)
+    return $restoredStations.ToArray()
+}
+
+function Add-LovionStationTestRecord {
+    param([string]$Station, [int]$TransformerIndex, [int]$TransformerCount, [string]$Status, [string]$Outcome, [int]$ExpectedCount, [int]$ImportedCount)
+    $script:StationTestRecords.Add([pscustomobject]@{
+        Station = $Station
+        Transformer = $TransformerIndex + 1
+        TransformerCount = $TransformerCount
+        Status = $Status
+        Outcome = $Outcome
+        ExpectedCount = $ExpectedCount
+        ImportedCount = $ImportedCount
+    })
+    Write-LovionStationTestCheckpoint -State 'running'
 }
 
 function Close-LovionStationResultTabs {
@@ -6570,6 +6824,7 @@ function Invoke-LovionStationsImportCore {
 
     $summaries = New-Object System.Collections.Generic.List[string]
     $manualStations = New-Object System.Collections.Generic.List[string]
+    $plannedTransformers = New-Object System.Collections.Generic.List[string]
     $totalImported = 0
     $stationCount = Get-CollectionCount $StationNumbers
     for ($index = 0; $index -lt $stationCount; $index += 1) {
@@ -6604,6 +6859,17 @@ function Invoke-LovionStationsImportCore {
                     $transformerCount = [Math]::Max(1, [int]$stationOpenResult.InitialResultCount)
                 }
 
+                if ((Get-ObjectPropertyValue -Object $stationOpenResult -Name 'SkipReason') -eq 'gepland') {
+                    $note = '{0} trafo {1}/{2}: gepland; niet geimporteerd' -f $station, ($transformerIndex + 1), $transformerCount
+                    $plannedTransformers.Add($note)
+                    Write-LovionBatchLog ('Geplande trafo genoteerd voor de eindmelding: ' + $note)
+                    Add-LovionStationTestRecord -Station $station -TransformerIndex $transformerIndex -TransformerCount $transformerCount -Status 'gepland' -Outcome 'planned' -ExpectedCount 0 -ImportedCount 0
+                    # The query page is still open: no VIEW or connection tab was
+                    # created, and the next working transformer must reuse it.
+                    $transformerIndex += 1
+                    continue
+                }
+
                 if ($null -ne $stationOpenResult -and $stationOpenResult.ManualRequired) {
                     if (-not $manualStations.Contains($station)) {
                         $manualStations.Add($station)
@@ -6626,6 +6892,9 @@ function Invoke-LovionStationsImportCore {
                 Set-LovionBatchStatus ("Station {0}/{1}, trafo {2}/{3}: aansluitingen importeren" -f ($index + 1), $stationCount, ($transformerIndex + 1), $transformerCount)
                 $result = Invoke-LovionBatchImport -SourcePrefix $sourcePrefix -SkipCountdown -UseExactSourceName -SourceType 'LovionStationBatch'
                 $totalImported += $result.ImportedCount
+                $expectedCount = Get-ObjectPropertyValue -Object $stationOpenResult -Name 'ConnectionCount'
+                $status = [string](Get-ObjectPropertyValue -Object $stationOpenResult -Name 'TransformerStatus')
+                Add-LovionStationTestRecord -Station $station -TransformerIndex $transformerIndex -TransformerCount $transformerCount -Status $status -Outcome 'imported' -ExpectedCount ([int]$expectedCount) -ImportedCount $result.ImportedCount
                 if ($transformerCount -gt 1) {
                     $summaries.Add(("{0} trafo {1}/{2}: {3} aansluitingen" -f $station, ($transformerIndex + 1), $transformerCount, $result.ImportedCount))
                     Write-LovionBatchLog ("Stationsimport: {0} trafo {1}/{2} afgerond met {3} aansluitingen." -f $station, ($transformerIndex + 1), $transformerCount, $result.ImportedCount)
@@ -6648,17 +6917,19 @@ function Invoke-LovionStationsImportCore {
         StationCount = $stationCount
         Summaries = $summaries.ToArray()
         ManualStations = $manualStations.ToArray()
+        PlannedTransformers = $plannedTransformers.ToArray()
     }
 }
 
 function Start-LovionStationsImport {
-    $stationNumbers = @(Show-StationNumbersDialog)
+    param([string[]]$StationNumbers, [switch]$TestRun)
+    if (-not $PSBoundParameters.ContainsKey('StationNumbers')) { $stationNumbers = @(Show-StationNumbersDialog) }
     if ($stationNumbers.Count -eq 0) {
         return
     }
 
     $question = "Open in Lovion eerst de lijst LS stroomtransformatorgroep en selecteer alleen de eerste rij.`n`nDe Workbench verwerkt daarna {0} station(s). Bij meerdere trafo-resultaten op één station wordt iedere trafo apart geopend en geïmporteerd, maar blijft SourceFile exact hetzelfde stationnummer.`n`nLovion moet volledig zichtbaar op het linker scherm staan. De cursor blijft op de laatst gebruikte positie staan; zodra je de muis zelf beweegt, stopt de automatisering. Typ tijdens de verwerking ook niet.`n`nStarten?" -f $stationNumbers.Count
-    $answer = [System.Windows.Forms.MessageBox]::Show($script:MainForm, $question, 'Stations importeren', [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+    $answer = if ($TestRun) { [System.Windows.Forms.DialogResult]::Yes } else { [System.Windows.Forms.MessageBox]::Show($script:MainForm, $question, 'Stations importeren', [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question) }
     if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) {
         return
     }
@@ -6671,27 +6942,49 @@ function Start-LovionStationsImport {
     }
 
     try {
+        if ($TestRun) {
+            # A previous test can stop while its connection result is still
+            # open. Recover only that confirmed table before rerunning the
+            # normal station entry point; do not assume arbitrary tabs exist.
+            if (-not (Set-LovionWindowActive)) { throw 'Lovion kon voor de testrun niet worden geactiveerd.' }
+            $startSnapshot = Get-LovionScreenCounters -UseLovionWindow -FullWindow
+            if ((Get-LovionConnectionsTableEvidence -Snapshot $startSnapshot).Ready) {
+                Write-LovionBatchLog 'Testrun: geopende aansluitingenlijst teruggezet naar de stationsquery.'
+                Close-LovionStationResultTabs
+            }
+        }
         $result = Invoke-LovionStationsImport -StationNumbers $stationNumbers
     }
     catch {
+        Write-LovionStationTestCheckpoint -State 'failed' -ErrorMessage $_.Exception.Message
         Write-LovionBatchLog ("FOUT stationsimport: {0}" -f $_.Exception.ToString())
         $script:MainForm.WindowState = [System.Windows.Forms.FormWindowState]::Normal
         $script:MainForm.Activate()
         Update-StatusBar
-        Show-ErrorMessage ("Stationsimport is afgebroken.`n`n{0}" -f $_.Exception.Message)
+        if (-not $TestRun) { Show-ErrorMessage ("Stationsimport is afgebroken.`n`n{0}" -f $_.Exception.Message) }
         return
     }
 
     $script:MainForm.WindowState = [System.Windows.Forms.FormWindowState]::Normal
     $script:MainForm.Activate()
     Update-StatusBar
+    if ($TestRun) {
+        # Include restored stations and their planned notes in the final summary.
+        $result.StationCount = $script:StationTestRequested.Count
+        $result.ImportedCount = $script:Table.Rows.Count
+        $result.Summaries = @($script:StationTestRecords | Where-Object { $_.Outcome -eq 'imported' } | ForEach-Object { '{0} trafo {1}/{2}: {3} aansluitingen' -f $_.Station, $_.Transformer, $_.TransformerCount, $_.ImportedCount })
+        $result.PlannedTransformers = @($script:StationTestRecords | Where-Object { $_.Outcome -eq 'planned' } | ForEach-Object { '{0} trafo {1}/{2}: gepland; niet geimporteerd' -f $_.Station, $_.Transformer, $_.TransformerCount })
+    }
     $details = if ((Get-CollectionCount $result.Summaries) -gt 0) { $result.Summaries -join "`n" } else { 'Geen aansluitingen geimporteerd.' }
     $manualText = ''
     if ((Get-CollectionCount $result.ManualStations) -gt 0) {
         $manualText = "`n`nLet op: de volgende stations hadden twee gele kaartresultaten zonder centrale marker. Voeg deze handmatig toe aan de Lovion Coordinate Workbench-lijst:`n{0}" -f ($result.ManualStations -join ', ')
     }
-    $completionMessage = "Stationsimport klaar.`n`nStations: {0}`nAansluitingen: {1}`n`n{2}{3}" -f $result.StationCount, $result.ImportedCount, $details, $manualText
-    Show-InfoMessage $completionMessage
+    $plannedText = if ($result.PlannedTransformers.Count -gt 0) { "`n`nGeplande trafo's (niet geimporteerd):`n" + ($result.PlannedTransformers -join "`n") } else { '' }
+    $completionMessage = "Stationsimport klaar.`n`nStations: {0}`nAansluitingen: {1}`n`n{2}{3}{4}" -f $result.StationCount, $result.ImportedCount, $details, $manualText, $plannedText
+    Write-LovionStationTestCheckpoint -State 'complete'
+    Write-LovionBatchLog ($completionMessage -replace '[\r\n]+', ' | ')
+    if (-not $TestRun) { Show-InfoMessage $completionMessage }
 }
 
 function Build-MainForm {
@@ -6792,7 +7085,7 @@ function Build-MainForm {
         $shapeButton
     ))
 
-    $grid = New-Object System.Windows.Forms.DataGridView
+    $grid = New-Object LovionDataGridView
     $grid.Dock = 'Fill'
     $grid.DataSource = $script:Table
     $grid.BackgroundColor = [System.Drawing.Color]::White
@@ -6968,6 +7261,38 @@ if ($MacroSmokeTest) {
 [System.Windows.Forms.Application]::SetCompatibleTextRenderingDefault($false)
 
 $form = Build-MainForm
+if (-not [string]::IsNullOrWhiteSpace($OpenStationResultPath)) {
+    if (-not [string]::IsNullOrWhiteSpace($StationListPath) -or -not [string]::IsNullOrWhiteSpace($StationTestReportPath)) { throw 'Open een stationsresultaat apart van een nieuwe testrun.' }
+    $savedReport = Get-Content -LiteralPath $OpenStationResultPath -Raw | ConvertFrom-Json
+    if ($savedReport.State -ne 'complete' -or -not [string]::IsNullOrWhiteSpace($savedReport.Error)) { throw 'Alleen een compleet stationsresultaat kan rechtstreeks worden geopend.' }
+    $script:StationTestRequested = @($savedReport.RequestedStations | ForEach-Object { [string]$_ })
+    $openedStations = @(Restore-LovionStationTestReports -Paths @($OpenStationResultPath))
+    if ($openedStations.Count -ne $script:StationTestRequested.Count -or $script:Table.Rows.Count -ne [int]$savedReport.ImportedRows) { throw 'Het opgeslagen stationsresultaat is niet volledig.' }
+}
+if (-not [string]::IsNullOrWhiteSpace($StationListPath)) {
+    $script:StationTestRequested = @(ConvertTo-StationNumberList -Text ([System.IO.File]::ReadAllText((Resolve-Path -LiteralPath $StationListPath).Path)))
+    if ($script:StationTestRequested.Count -eq 0 -or [string]::IsNullOrWhiteSpace($StationTestReportPath)) {
+        throw 'Een stationsbestand voor een testrun vereist stationnummers en StationTestReportPath.'
+    }
+    $restored = @()
+    if (-not [string]::IsNullOrWhiteSpace($StationTestResumePaths)) {
+        $restored = @(Restore-LovionStationTestReports -Paths ($StationTestResumePaths -split ';'))
+    }
+    $script:StationTestPending = @($script:StationTestRequested | Where-Object { $_ -notin $restored })
+    Write-LovionStationTestCheckpoint -State 'starting'
+    $script:StationTestTimer = New-Object System.Windows.Forms.Timer
+    $script:StationTestTimer.Interval = 1500
+    $script:StationTestTimer.Add_Tick({
+        $script:StationTestTimer.Stop()
+        if ($script:StationTestPending.Count -gt 0) {
+            Start-LovionStationsImport -StationNumbers $script:StationTestPending -TestRun
+        } else {
+            Write-LovionStationTestCheckpoint -State 'complete'
+            Write-LovionBatchLog 'Alle gevraagde stations waren al compleet; geen dubbele import gestart.'
+        }
+    })
+    $script:StationTestTimer.Start()
+}
 if ($SmokeTest) {
     $script:SmokeTestTimer = New-Object System.Windows.Forms.Timer
     $script:SmokeTestTimer.Interval = 400
