@@ -22,6 +22,9 @@ if (Test-Path -Path $exePath) {
 
 $scriptPath = Join-Path $scriptRoot 'LovionCoordinateTool.Gui.ps1'
 $scriptText = Get-Content -Path $scriptPath -Raw -Encoding UTF8
+$versionMatch = [regex]::Match($scriptText, '(?m)^\$script:AppVersion = ''(\d+\.\d+\.\d+)''')
+if (-not $versionMatch.Success) { throw 'De applicatieversie ontbreekt in LovionCoordinateTool.Gui.ps1.' }
+$appVersion = $versionMatch.Groups[1].Value
 $macroPath = Join-Path $scriptRoot 'assets\Trafo zoeken macro rapport.xml'
 if (-not (Test-Path -LiteralPath $macroPath -PathType Leaf)) {
     throw "Het Lovion-macrobestand ontbreekt: $macroPath"
@@ -66,6 +69,11 @@ using System.IO.Compression;
 using System.Linq;
 using System.Text;
 using System.Windows.Forms;
+
+[assembly: System.Reflection.AssemblyVersion("$appVersion.0")]
+[assembly: System.Reflection.AssemblyFileVersion("$appVersion.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("$appVersion")]
+[assembly: System.Reflection.AssemblyProduct("Lovion Aansluiting Extractor")]
 
 internal static class Program
 {

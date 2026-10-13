@@ -1245,6 +1245,7 @@ public static class LovionBatchInput
 }
 
 $script:AppName = 'Lovion Coordinate Tool'
+$script:AppVersion = '1.4.0'
 $script:ScriptDirectory = if ([string]::IsNullOrWhiteSpace($PSScriptRoot)) { (Get-Location).Path } else { $PSScriptRoot }
 $script:EmbeddedLovionMacroXmlBase64 = $null
 $script:LovionMacroRelativePath = Join-Path -Path 'assets' -ChildPath 'Trafo zoeken macro rapport.xml'
@@ -6989,7 +6990,7 @@ function Start-LovionStationsImport {
 
 function Build-MainForm {
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = $script:AppName
+    $form.Text = '{0} v{1}' -f $script:AppName, $script:AppVersion
     $form.StartPosition = 'CenterScreen'
     $form.Size = New-Object System.Drawing.Size(1500, 860)
     $form.MinimumSize = New-Object System.Drawing.Size(1100, 700)

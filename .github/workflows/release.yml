@@ -1,0 +1,84 @@
+name: Release v1.4.0
+
+on:
+  push:
+    tags:
+      - v1.4.0
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: powershell
+
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@v4
+
+      - name: Run regression tests
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tests = @(
+            'Test-GuiSurface.ps1',
+            'Test-LovionMacro.ps1',
+            'Test-LovionConnectionsTable.ps1',
+            'Test-LovionStationWorkflow.ps1',
+            'Test-PlannedTransformers.ps1',
+            'Test-StationResume.ps1',
+            'Test-LargeGridAccessibility.ps1'
+          )
+          foreach ($test in $tests) {
+            & powershell.exe -NoProfile -Sta -ExecutionPolicy Bypass -File (Join-Path '.\tests' $test)
+            if ($LASTEXITCODE -ne 0) { throw "Regressietest $test faalde." }
+          }
+
+      - name: Build standalone Workbench
+        run: .\Build-LovionCoordinateToolGuiExe.ps1 -OutputDirectory .\dist
+
+      - name: Verify executable version and smoke tests
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = (Resolve-Path '.\dist\LovionCoordinateWorkbench.exe').Path
+          if ((Get-Item -LiteralPath $exe).VersionInfo.FileVersion -ne '1.4.0.0') {
+            throw 'De standalone EXE heeft niet de verwachte versie 1.4.0.0.'
+          }
+          foreach ($argument in @('-SmokeTest', '-MacroSmokeTest')) {
+            $process = Start-Process -FilePath $exe -ArgumentList $argument -PassThru -Wait
+            if ($process.ExitCode -ne 0) { throw "Standalone test $argument faalde: $($process.ExitCode)." }
+          }
+
+      - name: Preserve tested executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: LovionCoordinateWorkbench-v1.4.0
+          path: dist/LovionCoordinateWorkbench.exe
+          if-no-files-found: error
+
+      - name: Publish new release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $releaseTag = '${{ github.ref_name }}'
+          $tagCommit = git rev-list -n 1 $releaseTag
+          if ($LASTEXITCODE -ne 0 -or $tagCommit -ne $env:GITHUB_SHA) {
+            throw 'De release-tag en de geteste broncode verschillen.'
+          }
+          # Publish only after tests, build and upload succeed. Never move an
+          # existing tag or replace assets from an older release.
+          gh release create $releaseTag '.\dist\LovionCoordinateWorkbench.exe' `
+            --repo "$env:GITHUB_REPOSITORY" --verify-tag --draft `
+            --title 'Lovion Aansluiting Extractor v1.4.0' `
+            --notes-file '.\release-notes\v1.4.0.md'
+          if ($LASTEXITCODE -ne 0) { throw 'De nieuwe release met EXE kon niet worden voorbereid.' }
+          gh release edit $releaseTag --repo "$env:GITHUB_REPOSITORY" --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw 'De geteste release kon niet worden gepubliceerd.' }

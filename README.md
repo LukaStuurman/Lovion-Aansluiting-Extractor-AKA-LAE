@@ -232,7 +232,7 @@ Daarnaast zijn de PowerShell-smoketest, `git diff --check`, de standalone GUI-EX
 | `tests/Test-LovionStationWorkflow.ps1` | Lokale regressietests voor OCR-ankering, tellers en hergebruik van stationresultaten. |
 | `tests/Test-LovionConnectionsTable.ps1` | Regressietests voor de aansluitingenlijst, OCR-kolomnamen en de gerichte schermscan. |
 | `tests/Test-PlannedTransformers.ps1` | Regressietests voor statussen per trafo-rij, geplande trafo's in de eindmelding en twee werkende trafo's op hetzelfde station. |
-| `.github/workflows/release-v1.2.0.yml` | Bouwt en publiceert de standalone release-EXE wanneer de release-tag wordt gepusht; de workflownaam/tagversie wordt bij iedere release bijgewerkt. |
+| `.github/workflows/release.yml` | Test, bouwt en publiceert de standalone release-EXE vanaf de nieuwe release-tag, zonder oudere releases of tags te overschrijven. |
 | `LovionBatch.log` | Runtime-log naast de GUI of EXE; bevat OCR-resultaten, trafo-indexen, wachttijden en batchstatussen. |
 
 ### Stationsworkflow als toestandsmachine
@@ -323,11 +323,11 @@ Deze controle vereist dat alle gevraagde stations en trafo-cycli zijn afgerond, 
 
 ### Releaseproces
 
-1. Werk eerst code, README en regressietests bij op `main`.
+1. Werk code, README en regressietests bij en voeg de geteste wijzigingen samen in `main`.
 2. Voer de lokale tests hierboven uit en controleer de diff.
-3. Verhoog in `.github/workflows/release-v1.2.0.yml` de workflownaam, tag en release-notities naar de nieuwe versie.
+3. Verhoog de applicatieversie in `LovionCoordinateTool.Gui.ps1` en de workflownaam, tag en EXE-versiecontrole in `.github/workflows/release.yml`. Voeg bijbehorende notities toe in `release-notes/`. De build neemt het versienummer uit het applicatiescript over in de EXE.
 4. Commit en push `main`.
-5. Push exact dezelfde versie-tag, bijvoorbeeld `v1.2.0`. GitHub Actions bouwt dan de standalone EXE, voert de EXE-smoketest uit en publiceert alleen `LovionCoordinateWorkbench.exe`.
+5. Maak een nieuwe versie-tag op de gecontroleerde `main`-commit, bijvoorbeeld `v1.4.0`, en push die zonder force. GitHub Actions voert de regressietests uit, bouwt de standalone EXE, controleert de EXE-versie en beide smoketests en publiceert alleen `LovionCoordinateWorkbench.exe`.
 6. Controleer na afloop de GitHub-release, de assetnaam en de release-notities. Een release mag niet verwijzen naar een oudere tag of een oude EXE.
 
 ## GUI
