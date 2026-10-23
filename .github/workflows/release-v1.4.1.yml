@@ -1,0 +1,96 @@
+name: Release Lovion v1.4.1
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'LovionCoordinateTool.Gui.ps1'
+      - 'release-notes/v1.4.1.md'
+      - '.github/workflows/release-v1.4.1.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: lovion-release-v1.4.1
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - name: Checkout tested source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify version and immutable tag
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $versionMatch = Select-String -LiteralPath '.\LovionCoordinateTool.Gui.ps1' -Pattern "^\`$script:AppVersion = '1\.4\.1'\`$"
+          if (-not $versionMatch) { throw 'De bronversie is niet v1.4.1.' }
+          $existingTag = git ls-remote --tags origin 'refs/tags/v1.4.1'
+          if ($LASTEXITCODE -ne 0) { throw 'Tags konden niet worden gecontroleerd.' }
+          if (-not [string]::IsNullOrWhiteSpace(($existingTag -join ''))) { throw 'Tag v1.4.1 bestaat al en wordt niet overschreven.' }
+
+      - name: Run regression tests
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tests = @(
+            'Test-GuiSurface.ps1',
+            'Test-LovionMacro.ps1',
+            'Test-LovionConnectionsTable.ps1',
+            'Test-LovionStationWorkflow.ps1',
+            'Test-PlannedTransformers.ps1',
+            'Test-StationResume.ps1',
+            'Test-LargeGridAccessibility.ps1'
+          )
+          foreach ($test in $tests) {
+            & powershell.exe -NoProfile -Sta -ExecutionPolicy Bypass -File (Join-Path '.\tests' $test)
+            if ($LASTEXITCODE -ne 0) { throw "Regressietest $test faalde." }
+          }
+
+      - name: Build standalone Lovion Workbench
+        run: .\Build-LovionCoordinateToolGuiExe.ps1 -OutputDirectory .\dist
+
+      - name: Verify EXE version and smoke tests
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = (Resolve-Path '.\dist\LovionCoordinateWorkbench.exe').Path
+          if ((Get-Item -LiteralPath $exe).VersionInfo.FileVersion -ne '1.4.1.0') {
+            throw 'Het EXE-versienummer komt niet overeen met v1.4.1.'
+          }
+          foreach ($argument in @('-SmokeTest', '-MacroSmokeTest')) {
+            $process = Start-Process -FilePath $exe -ArgumentList $argument -PassThru -Wait
+            if ($process.ExitCode -ne 0) { throw "Standalone test $argument faalde met code $($process.ExitCode)." }
+          }
+
+      - name: Upload tested executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: LovionCoordinateWorkbench-v1.4.1
+          path: dist/LovionCoordinateWorkbench.exe
+          if-no-files-found: error
+
+      - name: Publish v1.4.1 release and immutable tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $releaseTag = 'v1.4.1'
+          gh release create $releaseTag '.\dist\LovionCoordinateWorkbench.exe' `
+            --repo "$env:GITHUB_REPOSITORY" --target "$env:GITHUB_SHA" `
+            --title 'Lovion Aansluiting Extractor v1.4.1' `
+            --notes-file '.\release-notes\v1.4.1.md' --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Publicatie van release v1.4.1 mislukte.' }
+          git fetch --tags origin
+          if ($LASTEXITCODE -ne 0) { throw 'Release-tag kon niet worden geverifieerd.' }
+          $tagCommit = git rev-list -n 1 $releaseTag
+          if ($LASTEXITCODE -ne 0 -or $tagCommit -ne $env:GITHUB_SHA) {
+            throw 'De release-tag komt niet overeen met de geteste commit.'
+          }
