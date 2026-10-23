@@ -1245,7 +1245,7 @@ public static class LovionBatchInput
 }
 
 $script:AppName = 'Lovion Coordinate Tool'
-$script:AppVersion = '1.4.1'
+$script:AppVersion = '1.4.2'
 $script:ScriptDirectory = if ([string]::IsNullOrWhiteSpace($PSScriptRoot)) { (Get-Location).Path } else { $PSScriptRoot }
 $script:EmbeddedLovionMacroXmlBase64 = $null
 $script:LovionMacroRelativePath = Join-Path -Path 'assets' -ChildPath 'Trafo zoeken macro rapport.xml'
@@ -4268,10 +4268,40 @@ function Import-ExcelFile {
     Add-RowsToTable -Rows $prepared
 }
 
+function Import-LovionCsvRows {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    # Import both the legacy comma CSVs and Dutch Excel-friendly semicolon CSVs.
+    # Count separators only outside quoted header cells (which can contain
+    # either character), so imported values and field names remain unchanged.
+    $header = [string](Get-Content -LiteralPath $Path -TotalCount 1 -ErrorAction Stop)
+    if ([string]::IsNullOrWhiteSpace($header)) { return @() }
+    $quoted = $false
+    $commas = 0
+    $semicolons = 0
+    for ($i = 0; $i -lt $header.Length; $i += 1) {
+        $character = $header[$i]
+        if ($character -eq '"') {
+            if ($quoted -and $i + 1 -lt $header.Length -and $header[$i + 1] -eq '"') {
+                $i += 1
+            }
+            else {
+                $quoted = -not $quoted
+            }
+        }
+        elseif (-not $quoted) {
+            if ($character -eq ';') { $semicolons += 1 }
+            elseif ($character -eq ',') { $commas += 1 }
+        }
+    }
+    $delimiter = if ($semicolons -gt $commas) { ';' } else { ',' }
+    return @(Import-Csv -LiteralPath $Path -Delimiter $delimiter)
+}
+
 function Import-CsvFile {
     param([string]$Path)
 
-    $csvRows = Import-Csv -Path $Path
+    $csvRows = Import-LovionCsvRows -Path $Path
     $prepared = foreach ($row in $csvRows) {
         New-PreparedRowObject -Row $row -SourceFile ([System.IO.Path]::GetFileNameWithoutExtension($Path)) -SourcePath $Path -SourceType 'CSV'
     }
@@ -4679,7 +4709,7 @@ function Export-PointShapefileDynamic {
 
     $fields = New-DynamicDbfFieldDefinitions -Rows $pointRows
     Write-DbfFileDynamic -Rows $pointRows -Fields $fields -Path $dbfPath
-    $fields | Select-Object Name, OriginalName, Type, Length, Decimals | Export-Csv -Path $fieldMapPath -NoTypeInformation -Encoding UTF8
+    $fields | Select-Object Name, OriginalName, Type, Length, Decimals | Export-Csv -Path $fieldMapPath -Delimiter ';' -NoTypeInformation -Encoding UTF8
     Set-Content -Path $cpgPath -Value '1252' -Encoding ASCII
     Set-Content -Path $prjPath -Encoding ASCII -Value 'PROJCS["Amersfoort / RD New",GEOGCS["Amersfoort",DATUM["Amersfoort",SPHEROID["Bessel 1841",6377397.155,299.1528128]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Oblique_Stereographic"],PARAMETER["latitude_of_origin",52.15616055555555],PARAMETER["central_meridian",5.38763888888889],PARAMETER["scale_factor",0.9999079],PARAMETER["false_easting",155000],PARAMETER["false_northing",463000],UNIT["metre",1]]'
 
@@ -4690,7 +4720,7 @@ function Export-GridToCsv {
     param([string]$Path)
 
     $rows = Convert-DataTableRowsToObjects -Table $script:Table
-    $rows | Export-Csv -Path $Path -NoTypeInformation -Encoding UTF8
+    $rows | Export-Csv -Path $Path -Delimiter ';' -NoTypeInformation -Encoding UTF8
 }
 
 function Refresh-CoordinatesFromGrid {
@@ -6741,7 +6771,7 @@ function Write-LovionStationTestCheckpoint {
             }
             [pscustomobject]$saved
         }
-        $savedRows | Export-Csv -LiteralPath ([System.IO.Path]::ChangeExtension($path, '.csv')) -NoTypeInformation -Encoding UTF8
+        $savedRows | Export-Csv -LiteralPath ([System.IO.Path]::ChangeExtension($path, '.csv')) -Delimiter ';' -NoTypeInformation -Encoding UTF8
     }
 }
 
@@ -6755,7 +6785,7 @@ function Restore-LovionStationTestReports {
         if (-not [string]::IsNullOrWhiteSpace($script:StationTestReportPath) -and $path -eq [System.IO.Path]::GetFullPath($script:StationTestReportPath)) { throw 'Gebruik een nieuw rapportpad bij het hervatten.' }
         $report = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
         $csvPath = [System.IO.Path]::ChangeExtension($path, '.csv')
-        $rows = if (Test-Path -LiteralPath $csvPath) { @(Import-Csv -LiteralPath $csvPath) } else { @() }
+        $rows = if (Test-Path -LiteralPath $csvPath) { @(Import-LovionCsvRows -Path $csvPath) } else { @() }
         $records = @($report.Records)
         $complete = @{}
         foreach ($group in @($records | Group-Object Station)) {
