@@ -1068,7 +1068,7 @@ function Export-CsvFile {
         }
     }
 
-    $Rows | Select-Object -Property $selectProperties | Export-Csv -Path $Path -NoTypeInformation -Encoding UTF8
+    $Rows | Select-Object -Property $selectProperties | Export-Csv -Path $Path -Delimiter ';' -NoTypeInformation -Encoding UTF8
 }
 
 function Export-AugmentedWorkbook {
@@ -1555,7 +1555,7 @@ function Export-PointShapefileDynamic {
 
     $fields = New-DynamicDbfFieldDefinitions -Rows $pointRows
     Write-DbfFileDynamic -Rows $pointRows -Fields $fields -Path $dbfPath
-    $fields | Select-Object Name, OriginalName, Type, Length, Decimals | Export-Csv -Path $fieldMapPath -NoTypeInformation -Encoding UTF8
+    $fields | Select-Object Name, OriginalName, Type, Length, Decimals | Export-Csv -Path $fieldMapPath -Delimiter ';' -NoTypeInformation -Encoding UTF8
 
     Set-Content -Path $cpgPath -Value '1252' -Encoding ASCII
     Set-Content -Path $prjPath -Encoding ASCII -Value 'PROJCS["Amersfoort / RD New",GEOGCS["Amersfoort",DATUM["Amersfoort",SPHEROID["Bessel 1841",6377397.155,299.1528128]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Oblique_Stereographic"],PARAMETER["latitude_of_origin",52.15616055555555],PARAMETER["central_meridian",5.38763888888889],PARAMETER["scale_factor",0.9999079],PARAMETER["false_easting",155000],PARAMETER["false_northing",463000],UNIT["metre",1]]'
