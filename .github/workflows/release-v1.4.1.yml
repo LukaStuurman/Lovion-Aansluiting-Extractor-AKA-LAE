@@ -32,7 +32,7 @@ jobs:
       - name: Verify version and immutable tag
         run: |
           $ErrorActionPreference = 'Stop'
-          $versionMatch = Select-String -LiteralPath '.\LovionCoordinateTool.Gui.ps1' -Pattern "^\`$script:AppVersion = '1\.4\.1'\`$"
+          $versionMatch = (Get-Content -LiteralPath '.\LovionCoordinateTool.Gui.ps1' -Raw).Contains('$script:AppVersion = ''1.4.1''')
           if (-not $versionMatch) { throw 'De bronversie is niet v1.4.1.' }
           $existingTag = git ls-remote --tags origin 'refs/tags/v1.4.1'
           if ($LASTEXITCODE -ne 0) { throw 'Tags konden niet worden gecontroleerd.' }
