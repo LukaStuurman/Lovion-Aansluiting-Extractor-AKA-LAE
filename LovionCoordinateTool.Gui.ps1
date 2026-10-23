@@ -1245,7 +1245,7 @@ public static class LovionBatchInput
 }
 
 $script:AppName = 'Lovion Coordinate Tool'
-$script:AppVersion = '1.4.0'
+$script:AppVersion = '1.4.1'
 $script:ScriptDirectory = if ([string]::IsNullOrWhiteSpace($PSScriptRoot)) { (Get-Location).Path } else { $PSScriptRoot }
 $script:EmbeddedLovionMacroXmlBase64 = $null
 $script:LovionMacroRelativePath = Join-Path -Path 'assets' -ChildPath 'Trafo zoeken macro rapport.xml'
