@@ -6554,6 +6554,32 @@ function Invoke-LovionStationMapSelection {
     throw ("Lovion heeft station {0} niet op de kaart geselecteerd; geen Terugzetten/Reset na de standaardklik of de gescande kaartmarkers." -f $StationNumber)
 }
 
+function Invoke-LovionStationQueryAfterInput {
+    param([Parameter(Mandatory = $true)][string]$StationNumber)
+
+    # A Citrix text box can visibly contain the correctly injected station
+    # number while Windows OCR misses its small text, the dot, or the caret.
+    # A successful TypeUnicodeText call is already mandatory at the call site.
+    # OCR is advisory here: do not prevent EXPLORE / Start query solely because
+    # the number was not recognized. Subsequent steps still verify real results.
+    $recognizedInput = Wait-LovionScreenPattern -Pattern ([regex]::Escape($StationNumber)) -TimeoutSeconds 4 -Description ("stationnummer {0} na invoeren" -f $StationNumber)
+    if ($null -eq $recognizedInput) {
+        Write-LovionBatchLog ("Station {0}: invoer is door LovionBatchInput verzonden, maar niet door OCR bevestigd; probeer EXPLORE en Start query alsnog. Controleer bij een fout de ingevoerde waarde in Lovion." -f $StationNumber)
+    }
+    Assert-LovionAutomationNotCancelled
+
+    Invoke-LovionStationOcrClick -TargetText 'EXPLORE' -Description 'de tab EXPLORE' -TimeoutSeconds 30 -MinXRatio 0.00 -MaxXRatio 0.18 -MinYRatio 0.00 -MaxYRatio 0.10 -AfterClickMilliseconds 500
+    $preQuerySnapshot = Get-LovionScreenCounters -FullWindow
+    $preQueryRawText = if ($null -ne $preQuerySnapshot) { [string]$preQuerySnapshot.rawText } else { '' }
+    Invoke-LovionStationOcrClick -TargetText 'Start query' -Description 'Start query' -TimeoutSeconds 45 -MinXRatio 0.00 -MaxXRatio 0.22 -MinYRatio 0.04 -MaxYRatio 0.20 -FallbackRecordedX 78 -FallbackRecordedY 105 -FallbackAfterSeconds 5 -AfterClickMilliseconds 900
+
+    $initialQueryCounters = Wait-LovionInitialStationQueryResults -PreviousRawText $preQueryRawText -TimeoutSeconds 45
+    if ($null -eq $initialQueryCounters) {
+        throw ("De eerste zoekresultaten voor station {0} konden na Start query niet betrouwbaar worden gelezen." -f $StationNumber)
+    }
+    return $initialQueryCounters
+}
+
 function Open-LovionConnectionsForStation {
     param(
         [string]$StationNumber,
@@ -6588,20 +6614,7 @@ function Open-LovionConnectionsForStation {
             Assert-LovionAutomationNotCancelled
             throw ("Stationnummer {0} kon niet in Lovion worden ingevoerd." -f $StationNumber)
         }
-        if ($null -eq (Wait-LovionScreenPattern -Pattern ([regex]::Escape($StationNumber)) -TimeoutSeconds 30 -Description ("stationnummer {0}" -f $StationNumber))) {
-            throw ("Stationnummer {0} werd na het invoeren niet op het Lovion-scherm gevonden." -f $StationNumber)
-        }
-        Assert-LovionAutomationNotCancelled
-
-        Invoke-LovionStationOcrClick -TargetText 'EXPLORE' -Description 'de tab EXPLORE' -TimeoutSeconds 30 -MinXRatio 0.00 -MaxXRatio 0.18 -MinYRatio 0.00 -MaxYRatio 0.10 -AfterClickMilliseconds 500
-        $preQuerySnapshot = Get-LovionScreenCounters -FullWindow
-        $preQueryRawText = if ($null -ne $preQuerySnapshot) { [string]$preQuerySnapshot.rawText } else { '' }
-        Invoke-LovionStationOcrClick -TargetText 'Start query' -Description 'Start query' -TimeoutSeconds 45 -MinXRatio 0.00 -MaxXRatio 0.22 -MinYRatio 0.04 -MaxYRatio 0.20 -FallbackRecordedX 78 -FallbackRecordedY 105 -FallbackAfterSeconds 5 -AfterClickMilliseconds 900
-
-        $initialQueryCounters = Wait-LovionInitialStationQueryResults -PreviousRawText $preQueryRawText -TimeoutSeconds 45
-        if ($null -eq $initialQueryCounters) {
-            throw "De eerste zoekresultaten voor station $StationNumber konden na Start query niet betrouwbaar worden gelezen."
-        }
+        $initialQueryCounters = Invoke-LovionStationQueryAfterInput -StationNumber $StationNumber
         # Aantal geladen is the authoritative transformer count. Gefilterd is only
         # a fallback for older Lovion views that do not expose the loaded counter.
         $initialResultCount = 0

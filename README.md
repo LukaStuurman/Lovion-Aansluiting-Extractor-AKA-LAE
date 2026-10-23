@@ -168,6 +168,7 @@ Startvoorwaarden:
 Per station werkt de workflow als volgt:
 
 1. Klikt de stationslijst aan, selecteert de bestaande stationwaarde met `Ctrl+A` en typt het stationnummer.
+   * De invoermethode moet slagen; een OCR-herkenning van het ingevoerde nummer wordt maximaal vier seconden geprobeerd, maar is niet langer verplicht. Lovion/Citrix kan correct ingevoerde tekst namelijk missen bij OCR. De ontbrekende OCR-bevestiging wordt gelogd; `EXPLORE` en `Start query` gaan alsnog door. De resultaten na `Start query` moeten nog steeds aantoonbaar laden, veranderen en stabiel worden.
 2. Klikt alleen op gevonden OCR-labels in de actuele schermregio. De workflow gebruikt dus niet blind één vaste knoppositie.
 3. Klikt achtereenvolgens op `EXPLORE`, `Start query`, `Open` en `VIEW`. `Start query` wordt maximaal 45 seconden gezocht; als Citrix traag is, wordt gewacht totdat het zichtbare label en de verwachte volgende schermtoestand aanwezig zijn.
 4. Na `Start query` leest de workflow `Aantal geladen` en `Gefilterd`. De OCR moet eerst van het vorige scherm veranderen en daarna stabiel zijn. `Aantal geladen` is de leidende teller; `Gefilterd` wordt alleen gebruikt als Lovion de geladen-teller niet toont.
