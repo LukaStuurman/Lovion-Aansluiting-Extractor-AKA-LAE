@@ -123,4 +123,44 @@ Assert-Test ($script:ImportCalls -eq 2) 'both transformer cycles are imported'
 Assert-Test ($script:CloseCalls -eq 2) 'each transformer cycle closes before the next one'
 Write-Output 'Station result reuse: PASS'
 
+# 4. The next station must still click EXPLORE and Start query if Citrix OCR
+#    misses a correctly typed station number. A failed query itself must abort.
+$script:RecognizeStationInput = $true
+$script:StationQueryClicks = New-Object System.Collections.Generic.List[string]
+$script:StationQueryLogs = New-Object System.Collections.Generic.List[string]
+$script:StationQueryResultReady = $true
+function Wait-LovionScreenPattern {
+    param([string]$Pattern, [int]$TimeoutSeconds, [string]$Description)
+    Assert-Test ($TimeoutSeconds -le 5) 'station input OCR retry is bounded'
+    if ($script:RecognizeStationInput) { return [pscustomobject]@{ rawText='017.525' } }
+    return $null
+}
+function Write-LovionBatchLog { param([string]$Message) $script:StationQueryLogs.Add($Message) }
+function Get-LovionScreenCounters {
+    param([switch]$FullWindow)
+    Assert-Test $FullWindow 'the pre-query snapshot covers the full Lovion window'
+    return [pscustomobject]@{ rawText='Previous station result'; loaded=1; filtered=1 }
+}
+function Invoke-LovionStationOcrClick {
+    param($TargetText,$Description,$TimeoutSeconds,$MinXRatio,$MaxXRatio,$MinYRatio,$MaxYRatio,$FallbackRecordedX,$FallbackRecordedY,$FallbackAfterSeconds,$AfterClickMilliseconds)
+    $script:StationQueryClicks.Add([string]$TargetText)
+}
+function Wait-LovionInitialStationQueryResults {
+    param([string]$PreviousRawText,[int]$TimeoutSeconds)
+    Assert-Test ($PreviousRawText -eq 'Previous station result') 'query uses a pre-click snapshot'
+    if (-not $script:StationQueryResultReady) { return $null }
+    return [pscustomobject]@{ rawText='New station result'; loaded=1; filtered=1 }
+}
+$first = Invoke-LovionStationQueryAfterInput -StationNumber '017.525'
+$script:RecognizeStationInput = $false
+$second = Invoke-LovionStationQueryAfterInput -StationNumber '017.526'
+Assert-Test ($first.loaded -eq 1 -and $second.loaded -eq 1) 'both station queries return results'
+Assert-Test (($script:StationQueryClicks.ToArray() -join '|') -eq 'EXPLORE|Start query|EXPLORE|Start query') 'second station must reopen Explore and start its own query'
+Assert-Test (@($script:StationQueryLogs | Where-Object { $_ -match '017\.526.*niet door OCR bevestigd' }).Count -eq 1) 'unverified station input must be logged'
+$script:StationQueryResultReady = $false
+$queryFailed = $false
+try { $null = Invoke-LovionStationQueryAfterInput -StationNumber '017.527' }
+catch { $queryFailed = $_.Exception.Message -like '*konden na Start query niet betrouwbaar worden gelezen*' }
+Assert-Test $queryFailed 'an unverified query result must not be imported'
+Write-Output 'Second station OCR continuation: PASS'
 Write-Output 'All Lovion station workflow tests: PASS'
