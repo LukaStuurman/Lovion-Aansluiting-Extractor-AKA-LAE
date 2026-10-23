@@ -27,6 +27,7 @@ jobs:
             'Test-LovionMacro.ps1',
             'Test-LovionConnectionsTable.ps1',
             'Test-LovionStationWorkflow.ps1',
+            'Test-CsvLocale.ps1',
             'Test-PlannedTransformers.ps1',
             'Test-StationResume.ps1',
             'Test-LargeGridAccessibility.ps1'
