@@ -29,7 +29,10 @@ Assert-Test ($script:Table.Rows[0]['SourceFile'] -eq '001.001') 'original statio
 Assert-Test ($script:StationTestRecords[1].Outcome -eq 'planned') 'planned note survives resuming'
 Write-LovionStationTestCheckpoint -State 'running'
 $checkpoint = Get-Content -LiteralPath $script:StationTestReportPath -Raw | ConvertFrom-Json
-$saved = @(Import-Csv -LiteralPath ([IO.Path]::ChangeExtension($script:StationTestReportPath,'.csv')))
+$savedCsvPath = [IO.Path]::ChangeExtension($script:StationTestReportPath,'.csv')
+$savedHeader = [string](Get-Content -LiteralPath $savedCsvPath -TotalCount 1)
+Assert-Test ($savedHeader -match '"SourceFile";"SourceType"') 'new checkpoint CSV uses Excel-compatible semicolons'
+$saved = @(Import-LovionCsvRows -Path $savedCsvPath)
 Assert-Test ($checkpoint.ImportedRows -eq 2 -and $saved.Count -eq 2) 'checkpoint saves exactly the retained grid'
 Assert-Test ($saved[0].FinalRdX -eq '100' -and $saved[0].SourceFile -eq '001.001') 'checkpoint preserves existing values'
 $rejected = $false

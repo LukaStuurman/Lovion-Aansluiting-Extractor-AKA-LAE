@@ -2,12 +2,8 @@ name: Release Lovion v1.4.1
 
 on:
   push:
-    branches:
-      - main
-    paths:
-      - 'LovionCoordinateTool.Gui.ps1'
-      - 'release-notes/v1.4.1.md'
-      - '.github/workflows/release-v1.4.1.yml'
+    tags:
+      - v1.4.1
 
 permissions:
   contents: write

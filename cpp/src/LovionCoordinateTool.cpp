@@ -1220,8 +1220,23 @@ char detectCsvDelimiter(const std::string& text) {
     std::string firstLine;
     std::istringstream in(text);
     std::getline(in, firstLine);
-    size_t comma = std::count(firstLine.begin(), firstLine.end(), ',');
-    size_t semicolon = std::count(firstLine.begin(), firstLine.end(), ';');
+    // CSV header fields may contain commas or semicolons within quotes.
+    // Count only actual separators so Dutch and older comma CSVs both import.
+    size_t comma = 0;
+    size_t semicolon = 0;
+    bool quoted = false;
+    for (size_t i = 0; i < firstLine.size(); ++i) {
+        if (firstLine[i] == '"') {
+            if (quoted && i + 1 < firstLine.size() && firstLine[i + 1] == '"') {
+                ++i;
+            } else {
+                quoted = !quoted;
+            }
+        } else if (!quoted) {
+            if (firstLine[i] == ',') ++comma;
+            if (firstLine[i] == ';') ++semicolon;
+        }
+    }
     return semicolon > comma ? ';' : ',';
 }
 
@@ -1801,13 +1816,13 @@ void exportCsv(const std::vector<Row>& rows, const fs::path& path) {
     std::vector<std::string> columns = collectColumns(rows);
     std::ostringstream out;
     for (size_t i = 0; i < columns.size(); ++i) {
-        if (i != 0) out << ',';
+        if (i != 0) out << ';';
         out << csvEscape(columns[i]);
     }
     out << "\r\n";
     for (const auto& row : rows) {
         for (size_t i = 0; i < columns.size(); ++i) {
-            if (i != 0) out << ',';
+            if (i != 0) out << ';';
             out << csvEscape(row.get(columns[i]));
         }
         out << "\r\n";
@@ -2195,11 +2210,11 @@ ShapefileResult exportPointShapefile(const std::vector<Row>& rows, const fs::pat
     writeDbfFile(pointRows, fields, dbfPath);
 
     std::ostringstream fieldMap;
-    fieldMap << csvEscape("Name") << ',' << csvEscape("OriginalName") << ',' << csvEscape("Type") << ','
-             << csvEscape("Length") << ',' << csvEscape("Decimals") << "\r\n";
+    fieldMap << csvEscape("Name") << ';' << csvEscape("OriginalName") << ';' << csvEscape("Type") << ';'
+             << csvEscape("Length") << ';' << csvEscape("Decimals") << "\r\n";
     for (const auto& field : fields) {
-        fieldMap << csvEscape(field.name) << ',' << csvEscape(field.originalName) << ',' << csvEscape(std::string(1, field.type))
-                 << ',' << csvEscape(std::to_string(field.length)) << ',' << csvEscape(std::to_string(field.decimals)) << "\r\n";
+        fieldMap << csvEscape(field.name) << ';' << csvEscape(field.originalName) << ';' << csvEscape(std::string(1, field.type))
+                 << ';' << csvEscape(std::to_string(field.length)) << ';' << csvEscape(std::to_string(field.decimals)) << "\r\n";
     }
     writeTextUtf8(fieldMapPath, fieldMap.str(), true);
     writeTextUtf8(cpgPath, "1252\r\n", false);
